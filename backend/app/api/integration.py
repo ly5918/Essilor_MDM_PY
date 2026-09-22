@@ -16,9 +16,10 @@ router = APIRouter(prefix="/cmd/integration", tags=["集成中心"])
 
 
 @router.get("/endpoint/list")
-async def endpoint_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200),
+async def endpoint_list(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200),
                         direction: Optional[str] = None, targetSystem: Optional[str] = None,
                         status: Optional[str] = None, keyword: Optional[str] = None):
+    """前端期望裸数组（不分页包装）。"""
     conn = await get_engine().connect()
     try:
         data = await list_table(conn, table("int_endpoint"), page=page, size=size,
@@ -28,7 +29,7 @@ async def endpoint_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, 
                                 order_by=table("int_endpoint").c.create_time.desc())
     finally:
         await conn.close()
-    return R.ok(data)
+    return R.ok(data["rows"])
 
 
 @router.get("/endpoint/{endpoint_id}")
@@ -111,6 +112,7 @@ async def run_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=20
 
 
 @router.post("/run/{run_id}/retry")
+@router.put("/run/{run_id}/retry")
 async def retry_run(run_id: int):
     """重试失败批次：复制一条新 run 记录并置为成功（模拟）。"""
     async with get_engine().begin() as conn:

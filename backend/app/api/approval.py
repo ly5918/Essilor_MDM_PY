@@ -191,12 +191,11 @@ async def approval_kpi(scope: str = Query("BU")):
 
 @router.get("/task/{task_no}/detail")
 async def approval_task_detail(task_no: str):
-    t = table("cmd_approval_task")
-    row = (await (await get_engine().connect()).execute(
-        select(t).where(t.c.task_no == task_no))).mappings().first()
-    if row is None:
-        return R.fail("任务不存在", code=404)
-    return R.ok(dict(row))
+    """处理详情（含决策标签与操作按钮）：加工为 CmdApprovalDetailVo 契约，不裸发表行。"""
+    vo = await svc.task_detail(task_no)
+    if vo is None:
+        return R.fail(f"待办任务不存在：{task_no}", code=404)
+    return R.ok(vo)
 
 
 @router.get("/flow/{key}")
@@ -220,7 +219,22 @@ async def approval_instance_list(page: int = Query(1, ge=1), size: int = Query(1
 
 @router.post("/action")
 async def do_action(req: ApprovalAction):
-    result = await svc.do_action(req.task_no, req.action, req.actor, req.opinion or "", req.role)
+    # 前端发数字主键 taskId（Java 口径）；纯数字先反查任务编号
+    task_ref = (req.task_no or "").strip()
+    if task_ref.isdigit():
+        conn = await get_engine().connect()
+        try:
+            row = (await conn.execute(
+                select(table("cmd_approval_task").c.task_no)
+                .where(table("cmd_approval_task").c.id == int(task_ref)))).first()
+        finally:
+            await conn.close()
+        if row is None:
+            return R.fail(f"待办任务不存在：{task_ref}", code=404)
+        task_ref = row[0]
+    # 动作键统一转小写（前端发 APPROVE/REJECT/RETURN/ESCALATE/MERGE/EXCLUDE/CREATE_NEW）
+    action = (req.action or "").strip().lower()
+    result = await svc.do_action(task_ref, action, req.actor, req.opinion or "", req.role)
     return R.ok(result, msg="审批完成")
 
 

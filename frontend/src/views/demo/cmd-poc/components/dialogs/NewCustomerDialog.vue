@@ -5,7 +5,7 @@
       <b>动态元数据表单</b>
       <span>根据 {{ contextText }} 加载字段（{{ dynamicFields.length }} 个，其中必填 {{ requiredCount }} 个）</span>
       <el-tag type="success" size="small" effect="plain">模型版本 {{ currentVersion }}</el-tag>
-      <el-button link type="primary" @click="onReload">刷新字段</el-button>
+      <el-button link type="primary" :loading="reloading" @click="onReload">刷新字段</el-button>
     </div>
 
     <el-form ref="formRef" :model="form" :rules="rules" label-width="190px" class="nc-form">
@@ -220,7 +220,7 @@ defineOptions({ name: 'CmdPocNewCustomerDialog' });
 
 defineProps<{ payload?: Record<string, unknown> }>();
 
-const { publishedFields, loadCustomers, ocrPrefill, setOcrPrefill, refreshBadge } = useCmdPoc();
+const { publishedFields, metadataFields, loadMetadataFields, loadCustomers, ocrPrefill, setOcrPrefill, refreshBadge } = useCmdPoc();
 
 /** 已在「业务上下文」维护或由系统托管的字段，不在动态区重复渲染 */
 const CONTEXT_FIELD_CODES = ['customer_type', 'bu_scope', 'product_line', 'source_system', 'status'];
@@ -244,14 +244,15 @@ const ocrFieldCodes = ref<string[]>([]);
 
 /** 当前生效的元数据模型版本（打开弹窗时实时读取，替代早期硬编码的假版本号） */
 const currentVersion = ref('…');
-onMounted(async () => {
+const loadVersion = async () => {
+  currentVersion.value = '…';
   try {
     const versions = await listModelVersions();
     currentVersion.value = versions.find(v => v.status === 'Current')?.version ?? versions[0]?.version ?? currentVersion.value;
   } catch {
     /* 版本号读取失败不打断表单，保持占位 */
   }
-});
+};
 
 const form = reactive<CustomerForm & { dynamicValues: Record<string, string> }>({
   legalName: '',
@@ -328,9 +329,34 @@ watch(
   }
 );
 
-const onReload = () => {
-  // 重新触发上下文过滤即可（字段源为共享缓存，发布后自动包含新字段）
+/**
+ * 「刷新字段」：真实重拉元数据字段与模型版本。
+ * 此前这里是空函数（注释假设字段源为共享缓存「发布后自动包含新字段」），但共享缓存只在
+ * cmd-poc 外壳 onMounted 时拉取一次——若那一刻接口失败/时序未到，弹窗里就会一直是
+ * 「未加载到已发布字段」且点刷新无效。现在：打开弹窗时缓存为空则自动补拉，刷新按钮永远可重试。
+ */
+const reloading = ref(false);
+const onReload = async () => {
+  reloading.value = true;
+  try {
+    await Promise.all([loadMetadataFields(), loadVersion()]);
+    ElMessage.success(`字段已刷新：当前已发布 ${publishedFields.value.length} 个`);
+  } catch {
+    ElMessage.error('字段刷新失败，请稍后重试');
+  } finally {
+    reloading.value = false;
+  }
 };
+
+/** 弹窗每次打开都会重新挂载（destroy-on-close）：共享缓存为空时自动补拉一次，避免打开即「未加载」 */
+onMounted(() => {
+  if (!metadataFields.value.length) {
+    loadMetadataFields().catch(() => { /* 失败时保留警告条，可点「刷新字段」重试 */ });
+  }
+  if (currentVersion.value === '…') {
+    loadVersion();
+  }
+});
 
 const openOcr = () => {
   ocrVisible.value = true;

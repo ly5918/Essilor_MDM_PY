@@ -29,6 +29,7 @@ async def oneid_rule():
 async def oneid_rule_save(body: dict = Body(...)):
     body = dict(body)
     body["update_time"] = datetime.now()
+    body["status"] = "0"  # 保存即回到 Draft，需再点「发布规则」才生效（与前端交互一致）
     try:
         t = table("oneid_rule")
         existing = (await (await get_engine().connect()).execute(
@@ -46,15 +47,16 @@ async def oneid_rule_save(body: dict = Body(...)):
 
 @router.put("/rule/publish")
 async def oneid_rule_publish():
+    """发布当前默认规则：status '0'=Draft / '1'=已发布（表无 published 列，状态在 status）。"""
     try:
         t = table("oneid_rule")
         async with get_engine().begin() as conn:
             rid = (await conn.execute(select(func.max(t.c.id)).select_from(t))).scalar() or 0
-            await conn.execute(t.update().values(published="0"))
+            await conn.execute(t.update().values(status="0"))
             if rid:
-                await conn.execute(t.update().where(t.c.id == rid).values(published="1"))
-    except Exception:
-        pass
+                await conn.execute(t.update().where(t.c.id == rid).values(status="1"))
+    except Exception as e:
+        return R.fail(f"发布失败: {e}", code=500)
     return R.ok(msg="OneID 规则已发布")
 
 

@@ -79,6 +79,13 @@ async def submit_change(payload: ChangeSubmit):
                        action_type="SUBMIT", action_name="提交申请",
                        operator_name="applicant", operator_role="BU_USER",
                        from_status="-", to_status="PENDING")
+        # 提交动作轨迹（与 Java 口径一致：审批轨迹 / 流程跟踪节点历史的数据源）
+        from ..services.trace import log_action
+        await log_action(conn, task_id=tid, task_no=request_code, one_id=payload.one_id,
+                         action_type="SUBMIT", action_name="提交申请",
+                         from_node_code="APPLY", to_node_code="APPLY",
+                         operator_name="applicant", operator_role="BU_USER",
+                         opinion=payload.change_reason or "")
     return R.ok({"request_code": request_code}, msg="变更申请已提交")
 
 

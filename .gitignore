@@ -5,13 +5,15 @@ desktop.ini
 ehthumbs.db
 $RECYCLE.BIN/
 
-# ===================== IDE / 编辑器 =====================
+# ===================== IDE / 编辑器 / AI 工具 =====================
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 .codeartsdoer/
+.workbuddy/
+.arts/
 
 # ===================== 工具产物 =====================
 .merkle-snapshot.json
@@ -53,6 +55,8 @@ backend/debug_persist.py
 # 后端临时调试脚本（下划线前缀的临时文件，不进仓库）
 backend/tests/_*.py
 backend/tests/_*.txt
+backend/tests/_*.java
+backend/tests/_manual_parts/
 backend/tests/*.out
 backend/tests/*.err
 
@@ -110,9 +114,11 @@ frontend/docs/*/*/*/*/*.jpeg
 frontend/docs/*/*/*/*/*.gif
 
 # ===================== 数据库 =====================
-# 数据库 dump（含数据，不上传；仅保留 sql/ 下的 schema）
+# 数据库 dump/备份（含数据，不上传；仅保留 sql/ 下的 schema）
 _db_dump_*.sql
 _db_dump_*.txt
+_backup_*.sql
+_db_backup/
 *.dump
 
 # ===================== 截图 / 临时产物 =====================
@@ -121,6 +127,28 @@ _py_*.png
 _*.png
 tmp/
 temp/
+
+# 下划线前缀的临时调试产物（js/json/txt/cjs/脚本等，不进仓库）
+_*.cjs
+_*.mjs
+_*.json
+_*.txt
+_*.java
+_*.log
+_probe_*
+_serve_*
+_uvicorn_*
+_verify_*
+_diag_*
+_walk*
+_chain*
+_e2e_*.cjs
+_*_appl.json
+_walkthrough/
+walkthrough/
+
+# 文档构建临时脚本（下划线前缀）
+frontend/docs/manual-kit/_*.py
 
 # ===================== 规格目录（已整理到 sql/，原 _spec 不上传） =====================
 _spec/

@@ -30,28 +30,69 @@
         <el-table-column label="SLA" width="80" align="center">
           <template #default="{ row }">{{ row.slaHours ?? '—' }}h</template>
         </el-table-column>
-        <el-table-column label="版本" width="70" align="center">
-          <template #default="{ row }">v{{ row.version ?? '—' }}</template>
+        <el-table-column label="版本" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.version" size="small" effect="plain">{{ row.version }}</el-tag>
+            <span v-else>—</span>
+          </template>
         </el-table-column>
         <el-table-column label="泳道节点" prop="nodeCount" width="85" align="center" />
         <el-table-column label="部署状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.deployed" type="success" size="small">已部署</el-tag>
+            <el-tooltip v-if="row.deployed && row.deployedAt" :content="`部署时间：${row.deployedAt}`" placement="top">
+              <el-tag type="success" size="small">已部署</el-tag>
+            </el-tooltip>
+            <el-tag v-else-if="row.deployed" type="success" size="small">已部署</el-tag>
             <el-tag v-else type="info" size="small">未部署</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" align="center" fixed="right">
+        <el-table-column label="操作" width="230" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" icon="Setting" @click="onConfig(row)">配置</el-button>
             <el-button link type="primary" size="small" icon="Share" :disabled="!row.deployed" @click="onViewSceneGraph(row)">
               泳道图
             </el-button>
-            <el-button v-if="!row.deployed" link type="warning" size="small" icon="Upload" @click="onDeploy(row)">
+            <el-button link type="primary" size="small" icon="Clock" @click="onVersions(row)">版本</el-button>
+            <el-button
+              v-if="!row.deployed"
+              link type="warning" size="small" icon="Upload" @click="onDeploy(row, false)"
+            >
               部署
+            </el-button>
+            <el-button
+              v-else
+              link type="warning" size="small" icon="RefreshRight" @click="onDeploy(row, true)"
+            >
+              重新部署
             </el-button>
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 版本管理弹窗：部署历史（版本号 / 定义ID / 节点数 / 部署人 / 时间 / 当前版本标记） -->
+      <el-dialog v-model="versionsOpen" :title="`版本管理 · ${versionsScene?.sceneName ?? ''}（${versionsScene?.sceneCode ?? ''}）`" width="720px">
+        <el-table v-loading="versionsLoading" border :data="versions">
+          <el-table-column label="版本号" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.status === '0'" type="success" size="small">{{ row.versionNo }}</el-tag>
+              <span v-else>{{ row.versionNo }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="定义 ID" prop="definitionId" min-width="180" show-overflow-tooltip />
+          <el-table-column label="节点数" prop="nodeCount" width="75" align="center" />
+          <el-table-column label="部署人" prop="deployedBy" width="90" align="center" />
+          <el-table-column label="部署时间" width="160" align="center">
+            <template #default="{ row }">{{ (row.deployedAt ?? '').replace('T', ' ').slice(0, 19) || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.status === '0'" type="success" size="small" effect="plain">当前版本</el-tag>
+              <el-tag v-else type="info" size="small" effect="plain">历史</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!versionsLoading && versions.length === 0" description="尚未部署：点击列表「部署」登记首个版本" :image-size="70" />
+      </el-dialog>
     </el-card>
   </section>
 </template>
@@ -59,8 +100,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { deployFlowScene, listFlowScenes } from '@/api/demo/cmdPoc';
-import type { FlowSceneVO } from '@/api/demo/cmdPoc/types';
+import { deployFlowScene, listFlowScenes, listFlowSceneVersions } from '@/api/demo/cmdPoc';
+import type { FlowSceneVO, FlowSceneVersionVO } from '@/api/demo/cmdPoc/types';
 import { useCmdPoc } from '../../composables/useCmdPoc';
 
 /**
@@ -116,18 +157,39 @@ const onViewSceneGraph = (row: unknown) => {
   openDialog('flowGraph', { sceneCode: scene.sceneCode, sceneName: scene.sceneName, flowCode: scene.flowCode });
 };
 
-/** 部署单个场景到 SpiffWorkflow（幂等） */
-const onDeploy = async (row: unknown) => {
+/** 部署单个场景到 SpiffWorkflow（幂等：BPMN 变更时版本进位，否则提示复用当前版本） */
+const onDeploy = async (row: unknown, redeploy: boolean) => {
   const scene = row as FlowSceneVO;
   sceneLoading.value = true;
   try {
-    await deployFlowScene(scene.sceneCode);
-    ElMessage.success(`流程「${scene.sceneName}」已部署到 SpiffWorkflow`);
+    const result = await deployFlowScene(scene.sceneCode);
+    if (redeploy && !result.created) {
+      ElMessage.info(`流程「${scene.sceneName}」已是最新版本 ${result.versionNo}（BPMN 未变化）`);
+    } else {
+      ElMessage.success(`流程「${scene.sceneName}」已部署为 ${result.versionNo}`);
+    }
     await loadScenes();
   } catch {
     ElMessage.error('部署失败，请检查后端日志');
   } finally {
     sceneLoading.value = false;
+  }
+};
+
+/** 版本管理弹窗：展示该场景的部署 / 版本历史 */
+const versionsOpen = ref(false);
+const versionsLoading = ref(false);
+const versionsScene = ref<FlowSceneVO | null>(null);
+const versions = ref<FlowSceneVersionVO[]>([]);
+const onVersions = async (row: unknown) => {
+  const scene = row as FlowSceneVO;
+  versionsScene.value = scene;
+  versionsOpen.value = true;
+  versionsLoading.value = true;
+  try {
+    versions.value = await listFlowSceneVersions(scene.sceneCode);
+  } finally {
+    versionsLoading.value = false;
   }
 };
 

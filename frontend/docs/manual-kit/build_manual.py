@@ -5,7 +5,7 @@ import base64, html, mimetypes, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, 'web')
 SECTIONS_DIR = os.path.join(HERE, 'sections')
-OUT = r"D:\Code\2026AI\AIA_MDM\Essilor_MDM\plus-ui\docs\Essilor_CMD_POC_全功能操作手册.html"
+OUT = r"D:\Code\2026AI\AIA_MDM\Essilor_MDM_PY\frontend\docs\Essilor_CMD_POC_全功能操作手册.html"
 
 sys.path.insert(0, HERE)
 from manual_content import SECTIONS

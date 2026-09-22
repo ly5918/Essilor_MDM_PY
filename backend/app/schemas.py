@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from typing import Any, Optional
-from pydantic import BaseModel
+import pydantic
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class R(BaseModel):
@@ -45,8 +46,15 @@ class CustomerSubmit(BaseModel):
 
 
 class ApprovalAction(BaseModel):
-    task_no: str
-    action: str            # approve / reject / escalate
+    """审批动作入参：兼容前端 camelCase（taskId/actionType）与后端 snake_case。
+
+    前端 submitApprovalAction 发送 {taskId, actionType, opinion}，键名经
+    AliasChoices 双风格绑定；动作值统一在路由层转小写（approve/reject/…）。
+    """
+    model_config = pydantic.ConfigDict(populate_by_name=True)
+
+    task_no: str = Field(validation_alias=AliasChoices("task_no", "taskId", "task_id"))
+    action: str = Field(validation_alias=AliasChoices("action", "actionType", "action_type"))
     actor: str = "demo"
     role: Optional[str] = None
     opinion: Optional[str] = None

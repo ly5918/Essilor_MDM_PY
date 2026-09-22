@@ -50,6 +50,23 @@ def _convert_keys(obj: Any, fn) -> Any:
     return obj
 
 
+# JS Number.MAX_SAFE_INTEGER：超过此范围的整数（19 位雪花 id）在浏览器 JSON.parse 时
+# 会丢失精度（如 ...030 被 parse 成 ...000），前端拿它回传（删除/详情/审批动作）就会打错行。
+# Java 端 RuoYi-Vue-Plus 的 BigNumberSerializer 对超范围 Long 按字符串下发，这里对齐该口径。
+_JS_SAFE_MAX = 2 ** 53 - 1
+
+
+def _serialize_compat(obj: Any) -> Any:
+    """camelCase key 转换 + 超出 JS 安全范围的整数转字符串，单次遍历完成。"""
+    if isinstance(obj, dict):
+        return {_to_camel(str(k)): _serialize_compat(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_serialize_compat(v) for v in obj]
+    if isinstance(obj, int) and not isinstance(obj, bool) and abs(obj) > _JS_SAFE_MAX:
+        return str(obj)
+    return obj
+
+
 class CamelCaseResponseMiddleware(BaseHTTPMiddleware):
     """把 JSON 响应体的 key 统一转成 camelCase（对齐 Java 后端）。"""
 
@@ -64,7 +81,7 @@ class CamelCaseResponseMiddleware(BaseHTTPMiddleware):
         try:
             data = json.loads(body)
             new_body = json.dumps(
-                _convert_keys(data, _to_camel),
+                _serialize_compat(data),
                 ensure_ascii=False, default=str,
             ).encode("utf-8")
         except Exception:

@@ -14,13 +14,16 @@ router = APIRouter(prefix="/cmd/match", tags=["匹配"])
 
 
 @router.get("/rule/list")
-async def match_rule_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200)):
+async def match_rule_list():
+    """匹配规则清单（裸数组，前端 listMatchRules 契约）。"""
     conn = await get_engine().connect()
     try:
-        data = await list_table(conn, table("match_rule"), page=page, size=size)
+        rows = (await conn.execute(
+            select(table("match_rule")).where(table("match_rule").c.del_flag == "0")
+            .order_by(table("match_rule").c.id))).mappings().all()
     finally:
         await conn.close()
-    return R.ok(data)
+    return R.ok([dict(r) for r in rows])
 
 
 @router.post("/rule")

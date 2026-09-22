@@ -32,7 +32,9 @@ async def _next_seq(conn, name: str, init: int = 0) -> int:
     if row is None:
         await conn.execute(seq_table.insert().values(name=name, current=init + 1))
         return init + 1
-    nxt = row._mapping["current"] + 1
+    # 必须取 max(current+1, init+1)：序列计数器可能落后于库内实际编号
+    # （库恢复 / 手工插入 / 其他写入口），直接 current+1 会撞唯一键
+    nxt = max(row._mapping["current"] + 1, init + 1)
     await conn.execute(seq_table.update().where(seq_table.c.name == name).values(current=nxt))
     return nxt
 
@@ -90,6 +92,7 @@ async def gen_code(conn, prefix: str, width: int = 6, key: str | None = None) ->
     tables_cols = [
         ("cmd_approval_task", "task_no"), ("cmd_governance_task", "task_code"),
         ("cmd_change_request", "request_code"), ("cmd_merge_record", "merge_code"),
+        ("audit_event", "event_id"),
     ]
     init = await _existing_max_num(conn, pattern, tables_cols, width)
     n = await _next_seq(conn, f"{key}_{d}", init=init)

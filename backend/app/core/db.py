@@ -40,6 +40,7 @@ REFLECT_TABLES = [
     "int_endpoint", "int_run", "int_message",
     "cmd_legacy_mapping", "cmd_loop_check_log", "cmd_notification",
     "cmd_role", "md_model_version",
+    "cmd_flow_def_version",
     "cmd_approval_action", "cmd_flow_scene", "cmd_flow_node_rule", "cmd_workflow_step_log",
 ]
 

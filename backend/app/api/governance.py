@@ -72,4 +72,11 @@ async def launch_merge(payload: MergeLaunch):
                        action_type="SUBMIT", action_name="发起合并流程",
                        operator_name="steward", operator_role="GC_STEWARD",
                        from_status="-", to_status="PENDING")
+        # 提交动作轨迹（流程跟踪「疑似重复发现」节点历史的数据源）
+        from ..services.trace import log_action
+        await log_action(conn, task_id=tid, task_no=merge_no, one_id=payload.merged_one_id,
+                         action_type="SUBMIT", action_name="发起合并流程",
+                         from_node_code="CAND", to_node_code="CAND",
+                         operator_name="steward", operator_role="GC_STEWARD",
+                         opinion=payload.reason if getattr(payload, "reason", None) else "")
     return R.ok({"task_code": task_code, "merge_approval_no": merge_no}, msg="合并流程已发起")

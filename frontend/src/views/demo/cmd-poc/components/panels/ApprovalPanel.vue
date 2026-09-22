@@ -276,6 +276,7 @@ import LoadErrorBar from '../LoadErrorBar.vue';
 import { describeError } from '../../composables/loadError';
 import {
   BIZ_TYPE_TEXT,
+  SCENE_TEXT,
   getApprovalKpis,
   getApprovalTaskDetail,
   listApprovalTasksByCategory,
@@ -383,8 +384,11 @@ const onLaunchMerge = () => {
   if (detail.value?.oneId) openDialog('merge', { oneId: detail.value.oneId, name: detail.value.name });
 };
 
-/** 场景显示名（IMPORT → 批量导入确认；客户类后端已存中文，原样显示） */
-const sceneText = computed(() => BIZ_TYPE_TEXT[detail.value?.scene ?? ''] ?? detail.value?.scene ?? '');
+/** 场景显示名（IMPORT → 批量导入确认；再退 SCENE_TEXT 场景编码映射；客户类后端已存中文，原样显示） */
+const sceneText = computed(() => {
+  const s = detail.value?.scene ?? '';
+  return BIZ_TYPE_TEXT[s] ?? SCENE_TEXT[s] ?? s;
+});
 
 /** 治理证据：后端以 JSON 快照下发，逐条渲染为「标签 / 值」；非 JSON 时原样展示 */
 const evidenceRows = computed<Array<{ label: string; value: string }>>(() => {

@@ -22,6 +22,18 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
         cross_bu = bool(payload.cross_bu)
         risk = "High" if dup["duplicate_flag"] == "Y" else "Medium"
 
+        # 命中存量时写入治理证据（含「候选One ID」键）——
+        # 审批端 _is_duplicate_link_approval 依据该键渲染「关联已有/创建新主档」决策按钮组
+        evidence = None
+        if dup["duplicate_flag"] == "Y" and dup["peers"]:
+            evidence = {
+                "候选One ID": "、".join(
+                    f"{p['one_id']} · {p.get('legal_name') or ''}" for p in dup["peers"]),
+                "匹配状态": dup["match_state"],
+                "查重依据": f"统一社会信用代码 {payload.credit_code} 命中存量主档",
+                "跨BU": "是" if cross_bu else "否",
+            }
+
         app_id = await seq.next_id(conn, "cmd_customer_application")
         await conn.execute(table("cmd_customer_application").insert().values(
             id=app_id, app_no=app_no, one_id=one_id,
@@ -46,6 +58,7 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             scope="BU", current_node_code="BU_REVIEW", current_node_name="BU初审",
             assignee_role="BU_STEWARD", status="PENDING", risk_level=risk,
             duplicate_state=dup["match_state"], cross_bu_flag="Y" if cross_bu else "N",
+            evidence_json=evidence,
             submit_time=datetime.now(), del_flag="0", create_by=0, create_time=datetime.now(),
         ))
 
@@ -69,6 +82,17 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             from_status="-", to_status="pending",
         )
 
+        # 轨迹：提交动作（与 Java CmdCustomerServiceImpl 一致——审批轨迹时间线与
+        # 流程跟踪「提交业务申请」节点的历史记录数据源）
+        from .trace import log_action
+        await log_action(
+            conn, task_id=task_id, task_no=app_no, one_id=one_id,
+            action_type="SUBMIT", action_name="提交申请",
+            from_node_code="APPLY", to_node_code="APPLY",
+            operator_name="applicant", operator_role="BU_USER",
+            opinion=payload.remark if getattr(payload, "remark", None) else "",
+        )
+
     return {
         "app_no": app_no, "one_id": one_id,
         "match_state": dup["match_state"], "duplicate_flag": dup["duplicate_flag"],
@@ -76,8 +100,13 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
     }
 
 
-async def publish_customer(conn, app_row, outcome: str) -> Optional[str]:
-    """审批通过（outcome=approved）后发布主档；驳回则仅更新申请状态。"""
+async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> Optional[str]:
+    """审批通过（outcome=approved）后发布主档；驳回则仅更新申请状态。
+
+    decision：审批端动作键（merge/create_new/exclude 等）——
+    - create_new / exclude：治理者判定「排除重复·创建新主档」，不链路到既有主档；
+    - 其余（含 merge）：EXACT 命中时 merged_to 关联存量主档首个候选。
+    """
     if outcome == "rejected":
         await conn.execute(
             table("cmd_customer_application").update()
@@ -89,7 +118,8 @@ async def publish_customer(conn, app_row, outcome: str) -> Optional[str]:
     # 重复命中：链路到既有主档；否则新建黄金记录
     one_id = app_row["one_id"]
     merged_to = None
-    if app_row["duplicate_flag"] == "Y" and app_row["match_state"] == "EXACT":
+    if ((decision or "").lower() not in ("create_new", "exclude")
+            and app_row["duplicate_flag"] == "Y" and app_row["match_state"] == "EXACT"):
         peers = await duplicate_check(conn, app_row["credit_code"])
         if peers["peers"]:
             merged_to = peers["peers"][0]["one_id"]

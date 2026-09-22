@@ -211,12 +211,45 @@ def build_swimlane(scene_code: str) -> list[dict]:
     return steps
 
 
-def resolve_current_node(task_status: Optional[str], current_node_name: Optional[str]) -> str:
-    """任务状态 + 当前节点名 → 泳道模板节点编码（Java resolveCurrentNode）。"""
+# 全场景模板出现过的节点编码集合（用于校验 current_node_code 可信度）
+VALID_NODE_CODES: set[str] = set()
+
+
+def _collect_node_codes() -> None:
+    for fn in (_create_scene, _merge_scene, _dq_rule_scene, _match_rule_scene,
+               _integration_scene, _generic_scene):
+        try:
+            for t in fn():
+                if len(t) >= 4 and t[3]:
+                    VALID_NODE_CODES.add(str(t[3]))
+        except Exception:
+            pass
+    # 兜底：其余场景手写补齐（import / change / deactivate / integration 等）
+    VALID_NODE_CODES.update({
+        "APPLY", "INPUT", "OCR", "DQ", "DUP", "BU_REVIEW", "GC_REVIEW",
+        "RESULT", "PUBLISH", "TRACE", "AUDIT", "CAND", "COMPARE", "EXEC",
+        "XREF", "RUN",
+    })
+
+
+_collect_node_codes()
+
+
+def resolve_current_node(task_status: Optional[str], current_node_name: Optional[str],
+                         current_node_code: Optional[str] = None) -> str:
+    """任务状态 + 当前节点名/编码 → 泳道模板节点编码（Java resolveCurrentNode）。
+
+    current_node_code 由 do_action 与引擎节点同步维护，是最可信的信号；
+    名字匹配仅作为旧数据的回退（历史行存在「升级后 current_node_name 仍为
+    BU初审、编码已是 GC_REVIEW」的脏数据，仅按名字匹配会把已完成的 BU 节点
+    错标为进行中）。
+    """
     name = current_node_name or ""
     status = task_status or ""
     if status in FINAL_OK_STATUS or "已完成" in name or "发布" in name:
         return "_DONE_"
+    if current_node_code and str(current_node_code) in VALID_NODE_CODES:
+        return str(current_node_code)
     if "GC" in name:
         return NODE_GC_REVIEW
     if "BU" in name:
@@ -227,7 +260,8 @@ def resolve_current_node(task_status: Optional[str], current_node_name: Optional
 
 
 def apply_step_status(steps: list[dict], task_status: Optional[str],
-                      current_node_name: Optional[str], touched_nodes: Optional[set] = None) -> None:
+                      current_node_name: Optional[str], touched_nodes: Optional[set] = None,
+                      current_node_code: Optional[str] = None) -> None:
     """Java applyStepStatus：终态全亮 / 终止后续 TERMINATED / 当前 CURRENT / 已过 COMPLETED。"""
     if not steps:
         return
@@ -235,7 +269,7 @@ def apply_step_status(steps: list[dict], task_status: Optional[str],
     name = current_node_name or ""
     finished = status in FINAL_OK_STATUS or "已完成" in name
     stopped = status in FINAL_STOP_STATUS
-    current_code = resolve_current_node(status, name)
+    current_code = resolve_current_node(status, name, current_node_code)
 
     current_idx = -1
     for i, s in enumerate(steps):

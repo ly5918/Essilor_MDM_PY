@@ -81,6 +81,7 @@ import type {
   FlowInstanceQuery,
   FlowInstanceVO,
   FlowSceneVO,
+  FlowSceneVersionVO,
   HierarchyNodeVO,
   HierarchyAssignForm,
   HierarchyChildForm,
@@ -423,7 +424,8 @@ export const getCustomerStats = async (query?: CustomerQuery): Promise<CustomerS
  */
 function toApplicationVO(row: Record<string, unknown>): CustomerApplicationVO {
   return {
-    id: Number(row.id ?? 0),
+    // 后端雪花 id 以字符串下发（防 JS 精度丢失），这里原样保留，不做 Number() 收窄
+    id: (row.id ?? 0) as number | string,
     appNo: (row.appNo as string) ?? '',
     oneId: (row.oneId as string) ?? '',
     legalName: (row.legalName as string) ?? '',
@@ -440,7 +442,7 @@ function toApplicationVO(row: Record<string, unknown>): CustomerApplicationVO {
     matchState: row.matchState as string | undefined,
     duplicateFlag: row.duplicateFlag as string | undefined,
     mergedToOneId: row.mergedToOneId as string | undefined,
-    flowInstanceId: row.flowInstanceId == null ? undefined : Number(row.flowInstanceId),
+    flowInstanceId: row.flowInstanceId == null ? undefined : (row.flowInstanceId as number | string),
     flowStatus: row.flowStatus as string | undefined,
     remark: row.remark as string | undefined,
     createdAt: row.createTime as string | undefined,
@@ -1243,7 +1245,8 @@ export const getHierarchyRoots = async (buScope?: string): Promise<HierarchyNode
 /** 层级关系行 → 前端展示对象 */
 function toHierarchyRelationVO(row: CmdHierarchyRelationRow): HierarchyRelationVO {
   return {
-    id: Number(row.id ?? 0),
+    // 雪花 id 字符串原样保留（Number() 会丢精度，编辑回传会打错行）
+    id: (row.id ?? 0) as number | string,
     relationCode: row.relationCode ?? '',
     hierarchyType: row.hierarchyType ?? '',
     relationType: row.relationType ?? '',
@@ -1288,8 +1291,8 @@ export const getHierarchyRelationHistory = async (query: {
     request({ url: '/cmd/hierarchy/relationHistory', method: 'get', params: query })
   );
   return (rows ?? []).map(row => ({
-    id: Number(row.id ?? 0),
-    relationId: Number(row.relationId ?? 0),
+    id: (row.id ?? 0) as number | string,
+    relationId: (row.relationId ?? 0) as number | string,
     relationCode: row.relationCode ?? '',
     versionNo: Number(row.versionNo ?? 1),
     operation: row.operation ?? 'UPDATE',
@@ -2185,9 +2188,17 @@ export const listFlowInstances = async (query: FlowInstanceQuery = {}): Promise<
  * 工作流：将单个场景部署（幂等）到 Warm-Flow 引擎
  * 后端 POST /cmd/flow/deploy/{sceneCode}
  */
-export const deployFlowScene = async (sceneCode: string): Promise<number | string> => {
-  if (!useLive('approval')) return delay(1000 + Math.floor(Math.random() * 900));
-  return unwrap<number>(request({ url: `/cmd/flow/deploy/${sceneCode}`, method: 'post' }));
+export const deployFlowScene = async (sceneCode: string): Promise<{ definitionId: string; versionNo: string; created: boolean }> => {
+  if (!useLive('approval')) return delay({ definitionId: `${sceneCode}#v1.0`, versionNo: 'v1.0', created: true });
+  return unwrap<{ definitionId: string; versionNo: string; created: boolean }>(
+    request({ url: `/cmd/flow/deploy/${sceneCode}`, method: 'post' })
+  );
+};
+
+/** 流程定义版本历史（平台管理 › 工作流定义 › 版本管理） */
+export const listFlowSceneVersions = async (sceneCode: string): Promise<FlowSceneVersionVO[]> => {
+  if (!useLive('approval')) return delay([]);
+  return unwrap<FlowSceneVersionVO[]>(request({ url: `/cmd/flow/scene/${sceneCode}/versions`, method: 'get' }));
 };
 
 /* ============================== 10. One ID ============================== */
@@ -2419,7 +2430,8 @@ export const listAuditEvents = async (keyword?: string, pageNum = 1, pageSize = 
   return {
     rows: (page.rows ?? []).map(row => ({
       id: row.eventId ?? '',
-      time: row.eventTime ?? '',
+      // ISO 串格式化为 yyyy-MM-dd HH:mm:ss（去掉 T 与毫秒，避免列内折行）
+      time: (row.eventTime ?? '').replace('T', ' ').slice(0, 19),
       event: row.eventName ?? '',
       role: row.operatorRole ?? '',
       result: AUDIT_RESULT_TEXT[row.result ?? ''] ?? 'Success',

@@ -400,8 +400,8 @@ export type CustomerApplicationStatus = 'draft' | 'pending' | 'returned' | 'reje
  * 不在主档列表里，详情也不同（没有层级归属 / 版本，多了当前审批节点）。
  */
 export interface CustomerApplicationVO {
-  /** 申请单主键（= cmd_approval_task.biz_id） */
-  id: number;
+  /** 申请单主键（= cmd_approval_task.biz_id）；后端雪花 id 字符串下发，number 兼容 mock */
+  id: number | string;
   /** 申请编号（与 cmd_approval_task.task_no 同值同源，流程跟踪弹窗直接可用） */
   appNo: string;
   /** One ID（提交时预分配；发布主档沿用此号，拒绝 / 关联已有则作废保留） */
@@ -425,7 +425,8 @@ export interface CustomerApplicationVO {
   duplicateFlag?: string;
   /** 关联到的既有 One ID（EXACT / SUSPECTED 批准合并时回填） */
   mergedToOneId?: string;
-  flowInstanceId?: number;
+  /** SpiffWorkflow 流程实例 id；雪花 id 字符串下发（防 JS 精度丢失） */
+  flowInstanceId?: number | string;
   flowStatus?: string;
   remark?: string;
   createdAt?: string;
@@ -1115,7 +1116,8 @@ export interface CmdHierarchyRelationRow {
 
 /** 层级关系（前端展示对象） */
 export interface HierarchyRelationVO {
-  id: number;
+  /** 雪花 id 字符串下发（防 JS 精度丢失），number 兼容 mock */
+  id: number | string;
   relationCode: string;
   hierarchyType: string;
   relationType: string;
@@ -1156,8 +1158,9 @@ export interface CmdHierarchyRelationHistRow {
 
 /** 层级关系历史版本（历史归属追溯） */
 export interface HierarchyRelationHistVO {
-  id: number;
-  relationId: number;
+  /** 雪花 id 字符串下发（防 JS 精度丢失），number 兼容 mock */
+  id: number | string;
+  relationId: number | string;
   relationCode: string;
   /** 关系版本号 */
   versionNo: number;
@@ -1253,8 +1256,8 @@ export interface HierarchyValidateVO {
 
 /** 层级关系实时校验入参（不落业务数据） */
 export interface HierarchyValidateForm {
-  /** 编辑场景传关系主键，用于排除自身 */
-  id?: number;
+  /** 编辑场景传关系主键，用于排除自身；雪花 id 字符串下发（防精度丢失） */
+  id?: number | string;
   parentOneId: string;
   childOneId: string;
   relationType?: string;
@@ -1276,7 +1279,8 @@ export interface HierarchyChildForm {
 
 /** 编辑层级关系入参（落库，历史不覆盖） */
 export interface HierarchyRelationEditForm {
-  id: number;
+  /** 雪花 id 字符串下发（防 JS 精度丢失），number 兼容 mock */
+  id: number | string;
   /** 子节点只读回显（服务端不允许替换子节点） */
   childOneId: string;
   parentOneId: string;
@@ -1937,20 +1941,39 @@ export interface FlowSceneVO {
   sceneCode: string;
   /** 场景名称 */
   sceneName: string;
-  /** Warm-Flow 流程编码 */
+  /** SpiffWorkflow 流程编码 */
   flowCode: string;
-  /** Warm-Flow 流程名称 */
+  /** SpiffWorkflow 流程名称 */
   flowName?: string;
   /** 场景整体 SLA（小时） */
   slaHours?: number;
-  /** 是否已部署并发布到 Warm-Flow 引擎 */
+  /** 是否已部署并发布到 SpiffWorkflow 引擎（登记了当前版本） */
   deployed: boolean;
   /** 已发布的流程定义 ID（未部署为 null） */
   definitionId?: number | string;
-  /** 流程版本号 */
-  version?: number;
+  /** 流程版本号（v1.0 起，BPMN 变更重部署时进位） */
+  version?: string;
+  /** 当前版本部署时间 */
+  deployedAt?: string;
   /** 流程节点数 */
   nodeCount?: number;
+}
+
+/** 流程定义版本历史行（平台管理 › 工作流定义 › 版本管理弹窗；响应经驼峰中间件转换） */
+export interface FlowSceneVersionVO {
+  /** 版本号（v1.0 起） */
+  versionNo: string;
+  /** 定义 ID（flow_code#版本） */
+  definitionId: string;
+  /** 泳道节点数 */
+  nodeCount: number;
+  /** BPMN 内容哈希（变更检测） */
+  bpmnHash?: string;
+  /** '0'=当前版本 '1'=历史版本 */
+  status: string;
+  deployedBy?: string;
+  deployedAt?: string;
+  remark?: string;
 }
 
 /** ------------------------------------------------------------------

@@ -16,14 +16,31 @@ router = APIRouter(prefix="/cmd/hierarchy", tags=["客户层级"])
 
 @router.get("/nodes")
 async def nodes(keyword: Optional[str] = Query(None), buScope: Optional[str] = Query(None),
-               status: Optional[str] = Query(None), page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200)):
+               status: Optional[str] = Query(None), hierarchyType: Optional[str] = Query(None),
+               level: Optional[str] = Query(None),
+               page: int = Query(1, ge=1), size: int = Query(200, ge=1, le=500)):
+    t = table("cmd_hierarchy_node")
+    conds = [t.c.del_flag == "0"]
+    if buScope:
+        conds.append(t.c.bu_scope == buScope)
+    if status:
+        conds.append(t.c.status == status)
+    if hierarchyType:
+        conds.append(t.c.hierarchy_type == hierarchyType)
+    if level:
+        conds.append(t.c.level == level)
+    if keyword:
+        like = f"%{keyword}%"
+        conds.append(t.c.legal_name.like(like) | t.c.one_id.like(like) |
+                     t.c.node_code.like(like))
+    stmt = select(t).where(*conds).order_by(t.c.depth, t.c.sort_order, t.c.id)
     conn = await get_engine().connect()
     try:
-        data = await list_table(conn, table("cmd_hierarchy_node"), page=page, size=size, keyword=keyword,
-                                filters={"bu_scope": buScope, "status": status})
+        rows = (await conn.execute(
+            stmt.limit(size).offset((page - 1) * size))).mappings().all()
     finally:
         await conn.close()
-    return R.ok(data)
+    return R.ok([dict(r) for r in rows])
 
 
 @router.get("/node/{key}")
@@ -41,14 +58,22 @@ async def node_detail(key: str):
 
 
 @router.get("/childrenPage/{parent_one_id}")
-async def children_page(parent_one_id: str, page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200)):
+async def children_page(parent_one_id: str, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=200)):
     rel = table("cmd_hierarchy_relation")
+    t = table("cmd_hierarchy_node")
     conn = await get_engine().connect()
     try:
-        data = await list_table(conn, rel, page=page, size=size, filters={"parent_one_id": parent_one_id})
+        child_ids = (await conn.execute(
+            select(rel.c.child_one_id).where(rel.c.parent_one_id == parent_one_id)
+            .order_by(rel.c.id).limit(limit).offset(offset))).scalars().all()
+        rows = []
+        if child_ids:
+            rows = (await conn.execute(
+                t.select().where(t.c.one_id.in_(child_ids)).order_by(t.c.sort_order)
+            )).mappings().all()
     finally:
         await conn.close()
-    return R.ok(data)
+    return R.ok([dict(r) for r in rows])
 
 
 @router.get("/roots")
@@ -84,17 +109,19 @@ async def relations(one_id: str):
 
 
 @router.get("/relationHistory")
-async def relation_history(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200)):
+async def relation_history(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200)):
     try:
         conn = await get_engine().connect()
         try:
-            data = await list_table(conn, table("cmd_hierarchy_relation_hist"), page=page, size=size,
-                                    order_by=desc(table("cmd_hierarchy_relation_hist").c.id))
+            rows = (await conn.execute(
+                select(table("cmd_hierarchy_relation_hist"))
+                .order_by(desc(table("cmd_hierarchy_relation_hist").c.id))
+                .limit(size).offset((page - 1) * size))).mappings().all()
         finally:
             await conn.close()
-        return R.ok(data)
+        return R.ok([dict(r) for r in rows])
     except Exception:
-        return R.ok({"total": 0, "rows": []})
+        return R.ok([])
 
 
 @router.post("/relation")
@@ -133,16 +160,27 @@ async def validate(body: dict = Body(...)):
 
 
 @router.get("/unassigned")
-async def unassigned(buScope: Optional[str] = Query(None), page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200)):
+async def unassigned(buScope: Optional[str] = Query(None), keyword: Optional[str] = Query(None),
+                     page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=500)):
+    """待归位主数据：生效客户中尚未挂到层级树上的（排除已归位/merged/停用）。"""
     t = table("cmd_customer")
+    node = table("cmd_hierarchy_node")
+    conds = [t.c.del_flag == "0", t.c.status == "active",
+             ~select(node.c.one_id).where(
+                 node.c.one_id == t.c.one_id, node.c.del_flag == "0").exists()]
+    if buScope:
+        conds.append(t.c.bu_scope == buScope)
+    if keyword:
+        like = f"%{keyword}%"
+        conds.append(t.c.legal_name.like(like) | t.c.one_id.like(like))
     conn = await get_engine().connect()
     try:
         rows = (await conn.execute(
-            select(t).where(t.c.del_flag == "0", t.c.status == "active").limit(size).offset((page - 1) * size)
-        )).mappings().all()
+            select(t).where(*conds).order_by(t.c.id.desc())
+            .limit(size).offset((page - 1) * size))).mappings().all()
     finally:
         await conn.close()
-    return R.ok({"total": len(rows), "rows": [dict(r) for r in rows]})
+    return R.ok([dict(r) for r in rows])
 
 
 @router.post("/assign")

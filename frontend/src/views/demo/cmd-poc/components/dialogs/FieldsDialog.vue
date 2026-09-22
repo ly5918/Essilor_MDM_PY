@@ -1,6 +1,6 @@
 <template>
   <div class="poc-dialog-body">
-    <el-tabs v-model="activeTab">
+    <el-tabs v-model="activeTab" @tab-change="onTabChange">
       <!-- 字段目录 -->
       <el-tab-pane label="字段目录" name="fields">
         <div class="d-toolbar">
@@ -230,9 +230,9 @@ const versions = ref<ModelVersionVO[]>([]);
 /** 版本筛选（'' = 全部版本）；首次加载后默认落到当前工作版本，避免历史版本快照把目录刷成上百行 */
 const fieldVersionFilter = ref<string>('');
 const fieldKeyword = ref('');
-/** 目录中出现过的版本号（倒序），供筛选下拉使用 */
+/** 目录中出现过的版本号（按版本号数值倒序，v1.10 排在 v1.9 前），供筛选下拉使用 */
 const fieldVersionOptions = computed(() =>
-  Array.from(new Set(fieldRows.value.map(r => r.versionNo || '').filter(Boolean))).toSorted((a, b) => b.localeCompare(a))
+  Array.from(new Set(fieldRows.value.map(r => r.versionNo || '').filter(Boolean))).toSorted((a, b) => compareVersion(b, a))
 );
 const displayFieldRows = computed(() => {
   const kw = fieldKeyword.value.trim().toLowerCase();
@@ -307,9 +307,40 @@ const workingVersion = computed(() => {
   return versions.value.toSorted((a, b) => compareVersion(b.version, a.version))[0]?.version;
 });
 
+/**
+ * 目录行中版本号最大的版本（与 workingVersion 口径一致，但只依赖字段目录数据）。
+ * 用于字段目录的默认版本筛选：即使模型版本接口失败/为空，目录也能默认收窄到当前工作版本。
+ */
+const latestRowVersion = computed(() => {
+  const vs = fieldRows.value.map(r => r.versionNo || '').filter(Boolean);
+  if (!vs.length) return undefined;
+  return vs.toSorted((a, b) => compareVersion(b, a))[0];
+});
+
 const onNewField = () => {
   editingField.value = undefined;
   fieldDialogVisible.value = true;
+};
+
+/**
+ * 页签切换自愈：模型版本 / 值集列表若因加载时序或瞬时接口失败而空白，
+ * 切到对应页签时自动补拉一次，避免出现「暂无数据」假死。
+ */
+const onTabChange = async (tab: string | number) => {
+  if (tab === 'version' && !versions.value.length) {
+    try {
+      versions.value = await listModelVersions();
+    } catch {
+      ElMessage.error('模型版本加载失败，请稍后重试');
+    }
+  }
+  if (tab === 'valueSet' && !valueSets.value.length) {
+    try {
+      valueSets.value = await listValueSets();
+    } catch {
+      ElMessage.error('值集加载失败，请稍后重试');
+    }
+  }
 };
 
 const onEditField = (row: unknown) => {
@@ -443,11 +474,16 @@ const onPublishVersion = async (row: unknown) => {
 };
 
 onMounted(async () => {
-  [valueSets.value, versions.value] = await Promise.all([listValueSets(), listModelVersions()]);
+  // 值集与模型版本互不阻塞：任一失败只影响自己的页签（切页签时会自动补拉），
+  // 不能让 Promise.all 整体抛错拖死后面的字段目录加载（历史 bug：目录空白 + 版本页签「暂无数据」）
+  const [vs, ver] = await Promise.allSettled([listValueSets(), listModelVersions()]);
+  if (vs.status === 'fulfilled') valueSets.value = vs.value;
+  if (ver.status === 'fulfilled') versions.value = ver.value;
   // 字段目录按行展示（含同编码的历史/重复行），需单独加载带 id 的逐行数据
   await loadFieldRows();
-  // 默认只看当前工作版本（最新 Draft，无 Draft 则 Current）：新建的字段就落在这里，便于直接删除
-  fieldVersionFilter.value = workingVersion.value ?? '';
+  // 默认只看当前工作版本，避免历史版本快照把目录刷成上百行「重复数据」。
+  // 取「目录行中版本号最大者」而不是依赖版本页签的加载结果——版本接口失败/为空时照样能正确收窄
+  fieldVersionFilter.value = latestRowVersion.value ?? workingVersion.value ?? '';
 });
 </script>
 

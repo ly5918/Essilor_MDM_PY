@@ -2,8 +2,11 @@
 import os
 
 
-def _load_dotenv(path=".env"):
-    """极简 .env 解析（避免额外依赖）。"""
+def _load_dotenv(path=None):
+    """极简 .env 解析（避免额外依赖）。绝对路径基于本文件定位，
+    不依赖进程 CWD——否则从 tests/ 等目录启动时会静默回落默认库。"""
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:

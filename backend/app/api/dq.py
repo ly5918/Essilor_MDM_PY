@@ -15,18 +15,25 @@ router = APIRouter(prefix="/cmd/dq", tags=["数据质量"])
 
 
 @router.get("/rule/list")
-async def dq_rule_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200)):
+async def dq_rule_list():
+    """DQ 规则清单（裸数组，前端 listDqRules 契约）。"""
     conn = await get_engine().connect()
     try:
-        data = await list_table(conn, table("dq_rule"), page=page, size=size)
+        rows = (await conn.execute(
+            select(table("dq_rule")).where(table("dq_rule").c.del_flag == "0")
+            .order_by(table("dq_rule").c.id))).mappings().all()
     finally:
         await conn.close()
-    return R.ok(data)
+    return R.ok([dict(r) for r in rows])
 
 
 @router.post("/rule")
 async def dq_rule_create(body: dict = Body(...)):
     body = dict(body)
+    # NOT NULL 无默认值列兜底（前端/测试载荷可能缺省）
+    body.setdefault("rule_type", "CUSTOM")
+    body.setdefault("check_type", "NOT_NULL")
+    body.setdefault("model_code", "CUSTOMER")
     body.setdefault("create_time", datetime.now())
     async with get_engine().begin() as conn:
         vals = await dynamic_insert(conn, table("dq_rule"), body)

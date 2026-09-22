@@ -10,6 +10,7 @@ from ..core.db import get_engine, table, flow_instance_table
 from ..core.query import dynamic_insert, dynamic_update
 from ..schemas import R
 from ..workflow import swimlane as sl
+from ..services import flow_def_service as flow_def
 
 router = APIRouter(prefix="/cmd/flow", tags=["工作流"])
 
@@ -46,25 +47,31 @@ def _progress(steps: list[dict]) -> tuple[int, int, int]:
 
 @router.get("/scenes")
 async def flow_scenes():
-    """场景列表（FlowSceneVO[]）：cmd_flow_scene + SpiffWorkflow 引擎状态。"""
+    """场景列表（FlowSceneVO[]）：cmd_flow_scene + 部署版本登记（cmd_flow_def_version）。"""
     conn = await get_engine().connect()
     try:
         smap = await _scene_map(conn)
+        vmap: dict[str, dict] = {}
+        for code in smap:
+            vmap[code] = await flow_def.current_version(conn, code) or {}
     finally:
         await conn.close()
     result = []
     for code, row in smap.items():
-        node_count = len(sl.build_swimlane(code))
+        ver = vmap.get(code) or {}
+        node_count = ver.get("node_count") or len(sl.build_swimlane(code))
         result.append({
             "sceneCode": code,
             "sceneName": row.get("scene_name"),
             "flowCode": row.get("flow_code"),
             "flowName": row.get("flow_name"),
             "slaHours": row.get("sla_hours"),
-            # SpiffWorkflow 场景随代码即部署，status=0（正常）即视为已部署
-            "deployed": row.get("status") == "0",
-            "definitionId": row.get("definition_id") or code,
-            "version": 1,
+            # 已部署 = 场景正常且登记了当前版本（SpiffWorkflow 部署记录）
+            "deployed": row.get("status") == "0" and bool(ver),
+            "definitionId": (ver.get("definition_id") or row.get("definition_id")
+                             or None),
+            "version": ver.get("version_no") or None,
+            "deployedAt": ver.get("deployed_at"),
             "nodeCount": node_count,
         })
     return R.ok(result)
@@ -179,7 +186,8 @@ async def flow_instances(
         scene_code = sl.normalize_scene_code(r.get("scene_code"), r.get("biz_type"))
         scene = smap.get(scene_code, {})
         steps = sl.build_swimlane(scene_code)
-        sl.apply_step_status(steps, r.get("status"), r.get("current_node_name"))
+        sl.apply_step_status(steps, r.get("status"), r.get("current_node_name"),
+                             current_node_code=r.get("current_node_code"))
         done, total_steps, pct = _progress(steps)
         py = py_flows.get(r.get("task_no"))
         flow_instance_id = py["id"] if py else r.get("flow_instance_id")
@@ -212,7 +220,7 @@ async def flow_instances(
 
 @router.get("/trace/{task_no}")
 async def flow_trace(task_no: str):
-    """流程跟踪（FlowTraceVO）：步骤条 + 泳道图 + 动作轨迹 + 上下文变量。"""
+    """流程跟踪（FlowTraceVO）：步骤条 + 泳道图 + 动作轨迹 + 上下文变量 + 分步骤明细。"""
     conn = await get_engine().connect()
     try:
         t = table("cmd_approval_task")
@@ -228,30 +236,34 @@ async def flow_trace(task_no: str):
             .order_by(act.c.action_time))).mappings().all()]
         py_flow = (await conn.execute(
             flow_instance_table.select().where(flow_instance_table.c.biz_no == task_no))).mappings().first()
+
+        scene_code = sl.normalize_scene_code(task.get("scene_code"), task.get("biz_type"))
+        scene = smap.get(scene_code, {})
+        steps = sl.build_swimlane(scene_code)
+
+        # 轨迹按节点归并（人工节点由审批动作写入，自动节点由系统轨迹写入）
+        act_by_node: dict[str, dict] = {}
+        for a in actions:
+            key = a.get("to_node_code") or a.get("from_node_code")
+            if key:
+                act_by_node.setdefault(key, a)
+        for s in steps:
+            a = act_by_node.get(s["nodeCode"])
+            if a:
+                s["operator"] = a.get("operator_name")
+                s["actionTime"] = a.get("action_time")
+                s["opinion"] = a.get("opinion")
+            if s["nodeCode"] in sl.MANUAL_REVIEW_NODES:
+                s["assignee"] = "GC_STEWARD" if s["nodeCode"] == sl.NODE_GC_REVIEW else "BU_STEWARD"
+        sl.apply_step_status(steps, task.get("status"), task.get("current_node_name"),
+                             set(act_by_node.keys()))
+        done, total_steps, pct = _progress(steps)
+
+        # 分步骤明细（1:1 移植 Java fillStepDetails：每个节点都有内容，点步骤条即切）
+        from ..services.step_detail import build_step_details
+        step_details = await build_step_details(conn, task, steps, actions)
     finally:
         await conn.close()
-
-    scene_code = sl.normalize_scene_code(task.get("scene_code"), task.get("biz_type"))
-    scene = smap.get(scene_code, {})
-    steps = sl.build_swimlane(scene_code)
-
-    # 轨迹按节点归并（人工节点由审批动作写入，自动节点由系统轨迹写入）
-    act_by_node: dict[str, dict] = {}
-    for a in actions:
-        key = a.get("to_node_code") or a.get("from_node_code")
-        if key:
-            act_by_node.setdefault(key, a)
-    for s in steps:
-        a = act_by_node.get(s["nodeCode"])
-        if a:
-            s["operator"] = a.get("operator_name")
-            s["actionTime"] = a.get("action_time")
-            s["opinion"] = a.get("opinion")
-        if s["nodeCode"] in sl.MANUAL_REVIEW_NODES:
-            s["assignee"] = "GC_STEWARD" if s["nodeCode"] == sl.NODE_GC_REVIEW else "BU_STEWARD"
-    sl.apply_step_status(steps, task.get("status"), task.get("current_node_name"),
-                         set(act_by_node.keys()))
-    done, total_steps, pct = _progress(steps)
 
     # 泳道图（实例视图）
     graph = None
@@ -307,7 +319,7 @@ async def flow_trace(task_no: str):
         "bypass": {"lane": sl.LANE_ADMIN, "nodeName": "规则与参数配置",
                    "note": "配置 DQ 规则、匹配规则和审批试验，参数配置不打断主流程"},
         "steps": steps,
-        "stepDetails": [],
+        "stepDetails": step_details,
         "contextVars": context_vars,
         "actions": action_traces,
     }
@@ -326,7 +338,25 @@ async def flow_instance_start(task_no: str):
 
 @router.post("/deploy/{scene_code}")
 async def flow_deploy(scene_code: str):
-    return R.ok(msg=f"场景 {scene_code} 已部署（SpiffWorkflow 即时生效）")
+    """部署场景到 SpiffWorkflow：登记版本记录（幂等，BPMN 变更时版本号进位）。"""
+    try:
+        result = await flow_def.deploy(scene_code)
+    except ValueError as e:
+        return R.fail(str(e), code=404)
+    msg = ("流程已部署为 " + result["versionNo"]) if result["created"] \
+        else f"已是最新版本 {result['versionNo']}（BPMN 未变化，幂等复用）"
+    return R.ok(result, msg=msg)
+
+
+@router.get("/scene/{scene_code}/versions")
+async def flow_scene_versions(scene_code: str):
+    """场景版本历史（FlowSceneVersionVO[]）：版本号 / 定义ID / 节点数 / 部署人 / 时间。"""
+    conn = await get_engine().connect()
+    try:
+        rows = await flow_def.list_versions(conn, scene_code)
+    finally:
+        await conn.close()
+    return R.ok(rows)
 
 
 @router.get("/scene/{scene_code}/config")
