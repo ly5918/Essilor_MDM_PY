@@ -32,7 +32,7 @@
         type="info"
         :closable="false"
         show-icon
-        title="已结束的实例（已批准 / 已拒绝 / 已取消 / 已完成）。点「流程跟踪」弹窗展示完整链路（Warm-Flow 实例流程图、泳道步骤条、分步骤明细、Data context state 与审批轨迹），可点步骤条上任意节点查看该节点实际发生了什么。"
+        title="已结束的实例（已批准 / 已拒绝 / 已取消 / 已完成）。点「流程跟踪」弹窗展示完整链路（SpiffWorkflow 实例流程图、泳道步骤条、分步骤明细、Data context state 与审批轨迹），可点步骤条上任意节点查看该节点实际发生了什么。"
       />
 
       <el-table

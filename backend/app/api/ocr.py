@@ -70,7 +70,7 @@ async def ocr_results(bizId: Optional[str] = Query(None), page: int = Query(1, g
         rows = (await conn.execute(stmt.limit(size).offset((page - 1) * size))).mappings().all()
     finally:
         await conn.close()
-    return R.ok({"total": total, "list": [dict(r) for r in rows]})
+    return R.ok({"total": int(total), "rows": [dict(r) for r in rows]})
 
 
 class ConfirmReq(BaseModel):

@@ -71,7 +71,7 @@ async def audit_export(
             "export_status": "DONE", "export_time": datetime.now(),
             "operator_id": 1, "operator_name": "admin",
         })
-    return R.ok({"file_name": file_name, "row_count": data["total"], "list": data["list"]})
+    return R.ok(file_name, msg=f"共导出 {data['total']} 行")
 
 
 @router.post("/export")

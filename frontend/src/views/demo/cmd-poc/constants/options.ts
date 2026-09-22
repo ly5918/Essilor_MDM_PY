@@ -252,7 +252,7 @@ export const WORKFLOW_ESCALATE_OPTIONS = [
   { value: 'NOTIFY', label: '仅提醒，不升级' }
 ];
 
-/** 会签 / 或签（cmd_flow_node_rule.multi_mode，对应 Warm-Flow node_ratio） */
+/** 会签 / 或签（cmd_flow_node_rule.multi_mode，对应 SpiffWorkflow node_ratio） */
 export const WORKFLOW_MULTI_MODE_OPTIONS = [
   { value: 'ANY', label: '或签（任一办理人通过即可）' },
   { value: 'ALL', label: '会签（全部办理人通过）' },
@@ -269,7 +269,7 @@ export const WORKFLOW_ASSIGNEE_OPTIONS = [
 /** 邮件通知对象（写入 cmd_flow_scene.ext_json.notifyTargets） */
 export const WORKFLOW_NOTIFY_TARGET_OPTIONS = ['申请人', '当前节点办理人', 'BU Steward', 'GC Steward', 'Platform Admin'];
 
-/** 可增删的节点（新增节点规则时的候选；节点编码与 Warm-Flow flow_node.node_code 对齐） */
+/** 可增删的节点（新增节点规则时的候选；节点编码与 SpiffWorkflow flow_node.node_code 对齐） */
 export const WORKFLOW_NODE_OPTIONS = [
   { value: 'bu_review', label: 'BU Scope 初审（bu_review）' },
   { value: 'gc_review', label: 'GC Scope 决策（gc_review）' }

@@ -16,18 +16,39 @@ router = APIRouter(prefix="/cmd/change", tags=["变更"])
 
 
 @router.get("/list")
-async def change_list(status: Optional[str] = Query(None), page: int = Query(1), size: int = Query(20)):
+async def change_list(
+    status: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
+    changeType: Optional[str] = Query(None),
+    buScope: Optional[str] = Query(None),
+    oneId: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=200),
+):
     t = table("cmd_change_request")
-    stmt = select(t)
+    conds = [t.c.del_flag == "0"]
     if status:
-        stmt = stmt.where(t.c.status == status)
+        conds.append(t.c.status == status)
+    if changeType:
+        conds.append(t.c.change_type == changeType)
+    if buScope:
+        conds.append(t.c.bu_scope == buScope)
+    if oneId:
+        conds.append(t.c.one_id == oneId)
+    if keyword:
+        like = f"%{keyword}%"
+        conds.append(t.c.request_code.like(like) | t.c.one_id.like(like) |
+                     t.c.legal_name.like(like))
+    stmt = select(t).where(*conds)
     conn = await get_engine().connect()
     try:
-        rows = (await conn.execute(stmt.limit(size).offset((page - 1) * size))).mappings().all()
-        total = (await conn.execute(select(func.count()).select_from(t))).scalar()
+        rows = (await conn.execute(
+            stmt.order_by(t.c.id.desc()).limit(size).offset((page - 1) * size))).mappings().all()
+        total = (await conn.execute(
+            select(func.count()).select_from(t).where(*conds))).scalar()
     finally:
         await conn.close()
-    return R.ok({"total": total, "list": [dict(r) for r in rows]})
+    return R.ok({"total": int(total), "rows": [dict(r) for r in rows]})
 
 
 @router.post("")

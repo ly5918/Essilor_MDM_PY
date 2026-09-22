@@ -120,7 +120,7 @@
                   <el-tag size="small" :type="isGc ? 'warning' : 'info'">{{ isGc ? 'GC Scope' : 'BU Scope' }}</el-tag>
                 </div>
                 <div class="ap-detail-ops">
-                  <!-- 流程跟踪：泳道图步骤条 + Warm-Flow 实例进度（场景泳道图可视化） -->
+                  <!-- 流程跟踪：泳道图步骤条 + SpiffWorkflow 实例进度（场景泳道图可视化） -->
                   <el-button link type="primary" icon="Share" @click="onOpenFlowTrace">流程跟踪</el-button>
                   <!-- MERGE 场景：疑似/精准重复任务可直接发起客户合并（总设计 MERGE 触发路径） -->
                   <el-button v-if="canMerge" link type="warning" icon="Connection" @click="onLaunchMerge">发起合并</el-button>
@@ -179,7 +179,7 @@
                   <el-tag size="small" :type="isGc ? 'warning' : 'info'">{{ isGc ? 'GC Scope' : 'BU Scope' }}</el-tag>
                 </div>
                 <div class="ap-detail-ops">
-                  <!-- 流程跟踪：泳道图步骤条 + Warm-Flow 实例进度（场景泳道图可视化） -->
+                  <!-- 流程跟踪：泳道图步骤条 + SpiffWorkflow 实例进度（场景泳道图可视化） -->
                   <el-button link type="primary" icon="Share" @click="onOpenFlowTrace">流程跟踪</el-button>
                   <!-- MERGE 场景：疑似/精准重复任务可直接发起客户合并（总设计 MERGE 触发路径） -->
                   <el-button v-if="canMerge" link type="warning" icon="Connection" @click="onLaunchMerge">发起合并</el-button>
@@ -526,7 +526,7 @@ const openApproval = () => {
 /** 弹窗标题：任务编号 + 客户/主题 */
 const detailTitle = computed(() => (detail.value ? `${detail.value.id} · ${detail.value.name}` : '审批详情'));
 
-/** 打开流程跟踪弹窗（泳道图步骤条 + Warm-Flow 实例进度） */
+/** 打开流程跟踪弹窗（泳道图步骤条 + SpiffWorkflow 实例进度） */
 const onOpenFlowTrace = () => {
   const row = selectedRow.value;
   if (!row) return;

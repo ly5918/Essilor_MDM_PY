@@ -20,7 +20,7 @@
         <div class="wf-hint">
           <el-icon class="wf-hint-icon"><info-filled /></el-icon>
           <span class="wf-hint-text">
-            场景编码、流程编码与主干 BU 初审为<b>平台固定项</b>（与 Warm-Flow 流程定义、引擎节点定位绑定）；
+            场景编码、流程编码与主干 BU 初审为<b>平台固定项</b>（与 SpiffWorkflow 流程定义、引擎节点定位绑定）；
             其余节点规则按场景配置：命中条件、办理角色、会签或签、节点 SLA，以及是否启用。
           </span>
           <el-button link type="primary" size="small" icon="Share" @click="onViewGraph">查看泳道图</el-button>
@@ -194,7 +194,7 @@
           <el-descriptions-item label="当前版本">v{{ config.version ?? '—' }}</el-descriptions-item>
           <el-descriptions-item label="发布状态">
             <el-tag :type="config.deployed ? 'success' : 'info'" size="small">
-              {{ config.deployed ? '已发布到 Warm-Flow' : '未发布' }}
+              {{ config.deployed ? '已发布到 SpiffWorkflow' : '未发布' }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="配置归属">平台管理 · Workflow</el-descriptions-item>
@@ -286,7 +286,7 @@ function emptyConfig(): FlowSceneConfigVO {
 
 const configurableCount = computed(() => config.value.nodes.filter(node => node.configurable).length);
 
-/** 版本历史：POC 阶段取当前版本 + 变更说明渲染（后续可接 Warm-Flow 版本表） */
+/** 版本历史：POC 阶段取当前版本 + 变更说明渲染（后续可接 SpiffWorkflow 版本表） */
 const versionHistory = computed(() => [
   {
     version: `v${config.value.version ?? 1}`,

@@ -215,7 +215,7 @@ async def approval_instance_list(page: int = Query(1, ge=1), size: int = Query(1
     rows = (await (await get_engine().connect()).execute(
         flow_instance_table.select().order_by(desc(flow_instance_table.c.update_time))
         .limit(size).offset((page - 1) * size))).mappings().all()
-    return R.ok({"list": [dict(r) for r in rows]})
+    return R.ok([dict(r) for r in rows])
 
 
 @router.post("/action")

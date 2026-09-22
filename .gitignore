@@ -88,10 +88,26 @@ frontend/docs/*.bak
 frontend/docs/*.bak2
 
 # 前端文档截图（602 张共 126MB，不入库；HTML 文档与脚本保留）
-frontend/docs/**/*.png
-frontend/docs/**/*.jpg
-frontend/docs/**/*.jpeg
-frontend/docs/**/*.gif
+frontend/docs/*.png
+frontend/docs/*.jpg
+frontend/docs/*.jpeg
+frontend/docs/*.gif
+frontend/docs/*/*.png
+frontend/docs/*/*.jpg
+frontend/docs/*/*.jpeg
+frontend/docs/*/*.gif
+frontend/docs/*/*/*.png
+frontend/docs/*/*/*.jpg
+frontend/docs/*/*/*.jpeg
+frontend/docs/*/*/*.gif
+frontend/docs/*/*/*/*.png
+frontend/docs/*/*/*/*.jpg
+frontend/docs/*/*/*/*.jpeg
+frontend/docs/*/*/*/*.gif
+frontend/docs/*/*/*/*/*.png
+frontend/docs/*/*/*/*/*.jpg
+frontend/docs/*/*/*/*/*.jpeg
+frontend/docs/*/*/*/*/*.gif
 
 # ===================== 数据库 =====================
 # 数据库 dump（含数据，不上传；仅保留 sql/ 下的 schema）

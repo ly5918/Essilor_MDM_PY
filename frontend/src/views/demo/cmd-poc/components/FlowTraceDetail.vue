@@ -16,7 +16,7 @@
       </div>
 
       <!--
-        泳道图入口（原 Warm-Flow 引擎流程图已隐藏）：
+        泳道图入口（原 SpiffWorkflow 引擎流程图已隐藏）：
         引擎实例图只有 4 个泛化节点（开始/申请/初审/决策/结束），信息完全被下方
         11 步泳道步骤条覆盖，且节点名是引擎内部命名、与业务阶段对不上，反而造成
         「两张图两个口径」的困惑；引擎绑定信息（流程编码/实例 ID）保留在页脚。
@@ -31,7 +31,7 @@
           @click="onViewSwimlane"
         >泳道图</el-button>
         <span class="ft-graph-bar-note">
-          Warm-Flow {{ trace.engineBound ? '引擎已接入 · 实例 ' + (trace.flowInstanceId ?? '—') : '未启动实例' }}
+          SpiffWorkflow {{ trace.engineBound ? '引擎已接入 · 实例 ' + (trace.flowInstanceId ?? '—') : '未启动实例' }}
         </span>
       </div>
 
@@ -169,9 +169,9 @@
         </div>
       </div>
 
-      <!-- Warm-Flow 引擎关联 -->
+      <!-- SpiffWorkflow 引擎关联 -->
       <div class="ft-engine">
-        Warm-Flow 关联：流程编码 {{ trace.flowCode ?? '—' }} · 实例 {{ trace.flowInstanceId ?? '—' }} ·
+        SpiffWorkflow 关联：流程编码 {{ trace.flowCode ?? '—' }} · 实例 {{ trace.flowInstanceId ?? '—' }} ·
         场景 SLA {{ trace.slaHours ?? '—' }}h（业务表只存实例/任务 ID，引擎进度以镜像字段透出）
       </div>
     </template>

@@ -737,7 +737,7 @@ const hierItem = computed(() => (detail.value ? hierarchyIndex.value.get(detail.
 const levelTagType = (level: string) => (level === 'A3' ? 'primary' : level === 'A2' ? 'warning' : 'success');
 
 /**
- * Warm-Flow 实例状态码 → 中文
+ * SpiffWorkflow 实例状态码 → 中文
  * <p>
  * 业务表只存 flow_instance.flow_status 数值镜像（与 warm-flow-core FlowStatus 枚举一致），
  * 未知码不猜，直接以「状态码 N」透出，避免误标审批结论。

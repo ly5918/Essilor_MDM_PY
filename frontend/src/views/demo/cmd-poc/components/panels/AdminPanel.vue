@@ -67,7 +67,7 @@ const adminCards: AdminCard[] = [
   { title: 'DQ规则', desc: '技术规则、业务规则和版本。', actionText: '管理', dialog: 'dq', extended: true },
   { title: '匹配规则', desc: '信用代码、经营地址和辅助线索。', actionText: '管理', dialog: 'match', extended: true },
   { title: '导入Template', desc: '按业务上下文管理模板与映射。', actionText: '管理', dialog: 'template', extended: true },
-  // Workflow：点击「管理」进入工作流定义页（CMD 业务场景 ↔ Warm-Flow 流程定义映射、
+  // Workflow：点击「管理」进入工作流定义页（CMD 业务场景 ↔ SpiffWorkflow 流程定义映射、
   // 部署与泳道图），页内每行可再打开按场景的 Workflow配置
   // （流程节点 / 路由条件 / SLA 与升级 / 版本与发布，对齐 V6.1 第 16 页）
   { title: 'Workflow', desc: '按BU和场景配置审批路由。', actionText: '管理', page: 'flowDefinition', extended: true },

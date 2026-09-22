@@ -94,7 +94,7 @@ async def relation_history(page: int = Query(1, ge=1), size: int = Query(20, ge=
             await conn.close()
         return R.ok(data)
     except Exception:
-        return R.ok({"total": 0, "list": []})
+        return R.ok({"total": 0, "rows": []})
 
 
 @router.post("/relation")
@@ -142,7 +142,7 @@ async def unassigned(buScope: Optional[str] = Query(None), page: int = Query(1, 
         )).mappings().all()
     finally:
         await conn.close()
-    return R.ok({"total": len(rows), "list": [dict(r) for r in rows]})
+    return R.ok({"total": len(rows), "rows": [dict(r) for r in rows]})
 
 
 @router.post("/assign")

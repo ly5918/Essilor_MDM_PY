@@ -10,7 +10,7 @@
         </span>
       </div>
       <div class="fg-head-meta">
-        <el-tag size="small" type="success" effect="plain">Warm-Flow 引擎已部署</el-tag>
+        <el-tag size="small" type="success" effect="plain">SpiffWorkflow 引擎已部署</el-tag>
         <el-tag size="small" type="info" effect="plain">定义 ID {{ graph.definitionId ?? '—' }}</el-tag>
         <el-tag v-if="isInstance" size="small" :type="progressTagType" effect="plain">
           已完成 {{ doneCount }}/{{ graph.nodes.length }} 步
@@ -207,7 +207,7 @@
 
     <!-- 引擎关联说明 -->
     <div class="fg-engine">
-      <b>Warm-Flow 关联：</b>流程编码 {{ graph.flowCode }} · 定义 ID {{ graph.definitionId ?? '—' }}。
+      <b>SpiffWorkflow 关联：</b>流程编码 {{ graph.flowCode }} · 定义 ID {{ graph.definitionId ?? '—' }}。
       泳道图为总设计业务蓝图（7 阶段 × 6 泳道）；引擎侧将
       <b>BU Scope 初审 / GC Scope 决策</b> 建模为用户任务，其余自动节点由业务侧 Service 执行，
       结果以流程变量驱动路由。
