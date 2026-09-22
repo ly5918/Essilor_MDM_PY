@@ -1,0 +1,116 @@
+# ===================== 操作系统 =====================
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ===================== IDE / 编辑器 =====================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.codeartsdoer/
+
+# ===================== 工具产物 =====================
+.merkle-snapshot.json
+*.merkle
+
+# ===================== Python 后端 =====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+*.egg
+pip-log.txt
+pip-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# 后端本地配置（含数据库密码，请复制 .env.example 为 .env 后填写）
+backend/.env
+backend/.env.local
+
+# 后端运行/调试产物
+backend/*.log
+backend/logs/
+backend/debug_persist.py
+
+# 后端临时调试脚本（下划线前缀的临时文件，不进仓库）
+backend/tests/_*.py
+backend/tests/_*.txt
+backend/tests/*.out
+backend/tests/*.err
+
+# ===================== 前端 =====================
+# 依赖目录（pnpm install 重新生成）
+frontend/node_modules/
+frontend/.pnpm-store/
+
+# 构建产物
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+
+# 前端运行日志
+frontend/logs/
+frontend/*.log
+frontend/*.log.gz
+
+# 前端临时调试/产物文件
+frontend/lint.txt
+frontend/lint2.txt
+frontend/login.json
+frontend/kill_result.txt
+frontend/proc_info.txt
+frontend/flowtrace-bpmn-after.png
+frontend/e2e_oneid.mjs
+frontend/walk_*.mjs
+frontend/*.bak
+frontend/*.bak2
+
+# 前端文档备份
+frontend/docs/*.bak
+frontend/docs/*.bak2
+
+# 前端文档截图（602 张共 126MB，不入库；HTML 文档与脚本保留）
+frontend/docs/**/*.png
+frontend/docs/**/*.jpg
+frontend/docs/**/*.jpeg
+frontend/docs/**/*.gif
+
+# ===================== 数据库 =====================
+# 数据库 dump（含数据，不上传；仅保留 sql/ 下的 schema）
+_db_dump_*.sql
+_db_dump_*.txt
+*.dump
+
+# ===================== 截图 / 临时产物 =====================
+_e2e_*.png
+_py_*.png
+_*.png
+tmp/
+temp/
+
+# ===================== 规格目录（已整理到 sql/，原 _spec 不上传） =====================
+_spec/
+
+# ===================== 通用日志 =====================
+*.log
+*.log.gz
+*.out
+*.err

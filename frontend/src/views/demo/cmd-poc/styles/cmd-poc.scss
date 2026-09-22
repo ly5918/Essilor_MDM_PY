@@ -1,0 +1,1338 @@
+/**
+ * Customer Master Data · POC 工作台样式
+ *
+ * 作用域说明：
+ * - 页面内容位于 .cmd-poc 内部；el-dialog 使用 append-to-body 挂载到 body 下，
+ *   因此弹窗统一带 .poc-dialog 类，二者共用同一套变量与通用样式。
+ * - 主题色 --role-color 由根节点按角色内联注入，未注入时回退主色。
+ */
+
+.cmd-poc,
+.poc-dialog {
+  --g-sidebar: #0f3b5c;
+  --g-content: #f5f7fa;
+  --g-card: #ffffff;
+  --g-divider: #eceff4;
+  --g-text: #30343a;
+  --g-text2: #8a93a0;
+  --g-border: #d9dee5;
+  --btn-primary: #176c9f;
+  --btn-success: #4d944e;
+  --btn-warning: #db7c18;
+  --btn-danger: #d9534f;
+  --role-color: #176c9f;
+}
+
+/* ============================ 布局骨架 ============================ */
+.cmd-poc {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--g-content);
+  color: var(--g-text);
+  font-size: 14px;
+
+  .cmd-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+
+    &.sidebar-collapsed {
+      .sidebar {
+        display: none;
+      }
+    }
+  }
+
+  .cmd-main {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    padding: 0 20px 32px;
+  }
+}
+
+/* ============================ 顶部导航 ============================ */
+.cmd-poc {
+  .navbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 56px;
+    padding: 0 18px;
+    background: var(--g-card);
+    border-bottom: 1px solid var(--g-divider);
+    flex-shrink: 0;
+  }
+  .navbar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .brand-logo {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    background: var(--role-color);
+    color: #fff;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .brand-title {
+    font-weight: 600;
+    color: var(--g-text);
+    white-space: nowrap;
+  }
+  .env-tag {
+    flex-shrink: 0;
+  }
+  .right-menu {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+  }
+  .role-label {
+    color: var(--g-text2);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .role-select {
+    width: 200px;
+  }
+  .top-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ============================ 左侧菜单 ============================ */
+.cmd-poc {
+  .sidebar {
+    width: 230px;
+    flex-shrink: 0;
+    background: linear-gradient(#153f65, #0d304e);
+    padding: 16px 12px;
+    color: #fff;
+    overflow: auto;
+  }
+  .side-user {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 8px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  }
+  .side-avatar {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    color: #fff;
+  }
+  .side-name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .side-scope {
+    font-size: 12px;
+    color: #acd1e5;
+  }
+  .nav-title {
+    font-size: 10px;
+    color: #8fc5dd;
+    letter-spacing: 1px;
+    padding: 18px 10px 8px;
+  }
+  .side-menu {
+    border-right: none;
+    background: transparent;
+  }
+  .side-menu .el-menu-item {
+    height: 42px;
+    line-height: 42px;
+    border-radius: 7px;
+    margin: 3px 0;
+    &:hover,
+    &.is-active {
+      background: rgba(255, 255, 255, 0.12);
+    }
+  }
+  .cn-ico {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.12);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 10px;
+    font-size: 12px;
+  }
+  .cn-txt {
+    font-size: 13px;
+  }
+  .cn-badge {
+    margin-left: auto;
+    background: #d87520;
+    color: #fff;
+    border-radius: 10px;
+    padding: 0 7px;
+    font-size: 11px;
+    line-height: 18px;
+    height: 18px;
+  }
+}
+
+/* ============================ 页面通用 ============================ */
+.cmd-poc {
+  .crumb-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 48px;
+
+    .hamburger-shell {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background: var(--g-card);
+      border: 1px solid var(--g-divider);
+      color: var(--g-text2);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+
+      &:hover {
+        background: var(--g-content);
+        color: var(--g-text);
+        border-color: var(--el-color-primary-light-5);
+      }
+
+      :deep(.hamburger) {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+      }
+    }
+  }
+
+  .crumb {
+    flex: 1;
+    min-width: 0;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+  }
+  .page-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 4px 0 12px;
+    padding: 4px 0 4px 12px;
+    border-left: 3px solid var(--role-color, var(--el-color-primary));
+    border-radius: 2px;
+
+    .page-title-text {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      min-width: 0;
+
+      h2 {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        line-height: 1.3;
+        color: var(--g-text);
+        flex-shrink: 0;
+      }
+
+      p {
+        margin: 0;
+        font-size: 13px;
+        color: var(--g-text2);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    }
+
+    .page-title-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    /* 无写权限时的页头说明（替代被隐藏的按钮，避免页头右侧空白造成困惑） */
+    .page-title-readonly {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--g-text2);
+    }
+
+    /* 原型「申请逻辑停用」橙色按钮（plain 态） */
+    .poc-btn-orange {
+      --el-button-text-color: var(--btn-warning);
+      --el-button-border-color: var(--btn-warning);
+      &:hover {
+        --el-button-hover-text-color: #fff;
+        --el-button-hover-bg-color: var(--btn-warning);
+        --el-button-hover-border-color: var(--btn-warning);
+      }
+    }
+  }
+
+  /* 单行提示条：标题与说明同排显示，仅在宽度不足时换行 */
+  .poc-note {
+    :deep(.el-alert__title) {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 6px;
+      line-height: 1.5;
+    }
+
+    :deep(b) {
+      font-weight: 600;
+    }
+  }
+
+  .note-sep {
+    color: var(--g-text2);
+    opacity: 0.55;
+  }
+  .page {
+    padding-bottom: 8px;
+  }
+
+  /* 列表页统一版式：分页条固定在内容区底部，不随列表长短上下浮动。
+     表格高度由 useListTableHeight 按「内容区底部 - 表格顶部 - 预留」算出来
+     （表格内部滚动），因此所有列表页的分页条都落在同一个位置上。 */
+  .page.list-page {
+    .pagination-container {
+      margin-top: 0;
+      padding: 10px 16px 2px;
+      border-top: 1px solid var(--g-divider);
+      background: var(--g-card);
+    }
+
+    /* 分页条始终贴内容区底部，避免卡片留白把分页推到半空 */
+    .pagination-container .el-pagination {
+      float: none;
+    }
+  }
+  .page-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--g-text);
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* 统一卡片分区：筛选条件 / 数据列表 / 操作区 */
+  .page-card {
+    margin-bottom: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--g-divider);
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+  .card-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .card-toolbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .table-foot {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--g-text2);
+  }
+}
+
+/* 通用数据表：表头浅灰底 + 紧凑行高 */
+.cmd-poc,
+.poc-dialog {
+  /* 弹窗尽量占满视口高度：默认 15vh 顶部间距 + 全局 body max-height(90vh-111px)
+     会把内容挤出不必要的滚动条，这里对 POC 弹窗放开并紧凑化。 */
+  --el-dialog-margin-top: 2vh;
+
+  .el-dialog__body {
+    max-height: calc(100vh - 150px) !important;
+    padding: 12px 20px 10px !important;
+  }
+
+  .data-table {
+    font-size: 13px;
+    th.el-table__cell {
+      background: #f0f4f8 !important;
+      color: #47576b;
+      font-weight: 600;
+      padding: 4px 0;
+    }
+    td.el-table__cell {
+      padding: 4px 0;
+    }
+  }
+}
+
+/* ============================ 工作台 ============================ */
+.cmd-poc {
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .stat-card {
+    position: relative;
+    border-radius: 8px;
+  }
+  .stat-top {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 3px;
+    background: var(--role-color);
+    border-radius: 8px 8px 0 0;
+  }
+  .stat-label {
+    font-size: 13px;
+    color: var(--g-text2);
+  }
+  .stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--g-text);
+    margin: 2px 0;
+  }
+  .stat-foot {
+    font-size: 12px;
+    color: var(--g-text2);
+  }
+  .dash-bottom {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr;
+    gap: 12px;
+  }
+  .quick-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .quick-card {
+    cursor: pointer;
+    border-radius: 8px;
+    transition: transform 0.15s;
+    &:hover {
+      transform: translateY(-2px);
+    }
+  }
+  .q-ico {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .q-title {
+    margin-top: 8px;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .q-desc {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--g-text2);
+  }
+  .task {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .task .n {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+  }
+  .task-body {
+    flex: 1;
+    b {
+      display: block;
+      font-size: 13px;
+    }
+    small {
+      color: var(--g-text2);
+      font-size: 12px;
+    }
+
+    /* 待办节点级明细（可点下钻）：把「还有 N 条」拆到具体审批节点 */
+    .task-nodes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .task-node {
+      padding: 2px 8px;
+      border: 1px solid var(--el-border-color-lighter);
+      border-radius: 10px;
+      background: var(--el-fill-color-light);
+      color: var(--g-text2);
+      font-size: 11.5px;
+      line-height: 1.6;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      b {
+        color: var(--el-color-primary);
+        font-weight: 700;
+      }
+
+      &:hover {
+        border-color: var(--el-color-primary);
+        color: var(--el-color-primary);
+      }
+    }
+  }
+
+  .task-drill {
+    margin-top: 10px;
+    padding-left: 42px;
+    font-size: 12.5px;
+  }
+}
+
+/* ============================ 治理 / 审批 / 质量 ============================ */
+.cmd-poc {
+  .score-card {
+    margin-bottom: 12px;
+  }
+  .score-head {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 12px;
+    b {
+      font-size: 16px;
+      color: var(--btn-warning);
+    }
+    span {
+      font-size: 13px;
+      color: var(--g-text2);
+    }
+  }
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .flow-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .flow-card {
+    .flow-steps {
+      margin: 6px 0 10px;
+    }
+  }
+  .flow-remark {
+    font-size: 12px;
+    color: var(--g-text2);
+    margin: 0 0 10px;
+  }
+  .score-layout {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 16px;
+    align-items: center;
+  }
+  .score-ring {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 800;
+    color: #27653a;
+  }
+  .admin-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .admin-card {
+    /* 星标锚点：* 绝对定位右上角，不与标题分占两行 */
+    position: relative;
+
+    h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+    }
+    p {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: var(--g-text2);
+      min-height: 32px;
+    }
+    .capability-star {
+      position: absolute;
+      top: 10px;
+      right: 14px;
+      color: var(--btn-warning, #e6a23c);
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+    }
+  }
+  .hier-tree {
+    .el-tree-node__content {
+      height: 36px;
+    }
+  }
+  .tree-node {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    width: 100%;
+  }
+  .node-label {
+    font-weight: 500;
+  }
+  .node-actions {
+    margin-left: 8px;
+  }
+}
+
+/* DQ 分值着色 */
+.cmd-poc,
+.poc-dialog {
+  .dq-score {
+    font-weight: 700;
+  }
+  .dq-score.s-ok {
+    color: #3f8d52;
+  }
+  .dq-score.s-mid {
+    color: var(--btn-warning);
+  }
+  .dq-score.s-bad {
+    color: var(--btn-danger);
+  }
+}
+
+/* ============================ One ID 编码预览 ============================ */
+.cmd-poc {
+  .pattern-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #102f49;
+    color: #fff;
+    border-radius: 8px;
+    padding: 12px;
+    margin: 10px 0;
+    font-size: 13px;
+  }
+  .pattern-part {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 6px;
+    padding: 6px 10px;
+  }
+}
+
+/* ============================ 弹窗通用 ============================ */
+.poc-dialog {
+  .poc-dialog-body {
+    padding: 2px 0;
+  }
+  .d-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--g-text);
+    margin-bottom: 8px;
+  }
+  .kpi-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .kpi {
+    flex: 1;
+    min-width: 120px;
+    background: var(--g-content);
+    border: 1px solid var(--g-divider);
+    border-radius: 8px;
+    padding: 10px 12px;
+    b {
+      display: block;
+      font-size: 18px;
+      color: var(--g-text);
+    }
+    span {
+      font-size: 12px;
+      color: var(--g-text2);
+    }
+  }
+  .meta-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #edf7fa;
+    border: 1px solid #a9c9d8;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    b {
+      color: #176c9f;
+    }
+  }
+  .form-section {
+    grid-column: 1 / -1;
+    background: #eaf2f8;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 13px;
+    margin: 8px 0 12px;
+  }
+  .form-tip {
+    margin-left: 8px;
+    font-size: 12px;
+    color: var(--g-text2);
+  }
+  .danger-box {
+    margin-top: 12px;
+    border: 1px solid #f3c3c6;
+    background: #fff1f2;
+    color: #9e3c48;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .diff-old {
+    color: #9e3c48;
+  }
+  .diff-new {
+    color: #2f7140;
+  }
+  .db-panel {
+    background: #102f49;
+    color: #d9f1ff;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'Courier New', Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    margin: 0;
+    white-space: pre-wrap;
+  }
+  .ocr-upload {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .upload-name {
+    flex: 1;
+    font-size: 12px;
+    color: var(--g-text2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .timeline-v {
+    border-left: 2px solid #9ab3c6;
+    margin-left: 12px;
+    padding-left: 18px;
+  }
+  .timeline-v .event {
+    position: relative;
+    margin: 12px 0;
+    font-size: 13px;
+    &::before {
+      content: '';
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--btn-primary);
+      left: -23px;
+      top: 5px;
+    }
+  }
+  .event-desc {
+    color: var(--g-text2);
+    margin-top: 2px;
+  }
+  .upload-zone {
+    width: 100%;
+  }
+  .upload-inner {
+    padding: 12px;
+  }
+  .upload-ico {
+    font-size: 28px;
+  }
+  .upload-text {
+    font-size: 13px;
+    color: var(--g-text);
+  }
+  .upload-hint {
+    font-size: 12px;
+    color: var(--g-text2);
+    margin-top: 4px;
+  }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+  }
+  .code-panel {
+    background: #102f49;
+    color: #d9f1ff;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 12px;
+    overflow: auto;
+    .code-head {
+      color: #8fc5dd;
+      margin-bottom: 6px;
+    }
+  }
+  .mini-stat {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ms {
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+  .ms.ok {
+    background: #e7f5eb;
+    color: #2d7540;
+  }
+  .ms.fail {
+    background: #fff0f2;
+    color: #9e3c48;
+  }
+  .ms.skip {
+    background: #eef1f5;
+    color: #6c8192;
+  }
+}
+
+/* ============================ 间距工具类 ============================ */
+.cmd-poc,
+.poc-dialog {
+  .m-t-12 {
+    margin-top: 12px;
+  }
+  .m-t-16 {
+    margin-top: 16px;
+  }
+  .m-b-12 {
+    margin-bottom: 12px;
+  }
+}
+
+/* ============================ 治理与审批合并工作台 ============================ */
+.cmd-poc {
+  .ap-kpis {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .ap-kpi {
+    background: var(--g-card);
+    border: 1px solid var(--g-divider);
+    border-left: 3px solid var(--role-color, var(--el-color-primary));
+    border-radius: 8px;
+    padding: 10px 12px;
+    b {
+      display: block;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--g-text);
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+    span {
+      display: block;
+      font-size: 12px;
+      color: var(--g-text2);
+      line-height: 1.35;
+    }
+  }
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 12px;
+    align-items: start;
+  }
+  .governance-quick {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    .quick-card {
+      background: var(--g-card);
+      border: 1px solid var(--g-divider);
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      &:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+      }
+      b {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--g-text);
+        margin-bottom: 4px;
+      }
+      p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--g-text2);
+        line-height: 1.5;
+      }
+    }
+  }
+  .mini-table {
+    font-size: 13px;
+    .el-table__header th {
+      background: #f7f9fb;
+      color: var(--g-text2);
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .ap-risk {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .risk-high {
+      background: #fff0f0;
+      color: #d9534f;
+    }
+    .risk-medium {
+      background: #fff7e6;
+      color: #db7c18;
+    }
+    .risk-low {
+      background: #f0f9eb;
+      color: #4d944e;
+    }
+  }
+  .ap-tabs {
+    margin-bottom: 2px;
+  }
+  .ap-filter {
+    margin: 2px 0 8px;
+    padding: 6px 0;
+    border-top: 1px dashed var(--g-divider);
+  }
+  .ap-layout {
+    display: grid;
+    /* 左列表自适应；右侧速览栏窄于旧版详情（只读概要，完整审批在弹窗内操作）。
+       右栏由 360~420 收窄到 300~380：本页列表有 9 列（任务编号/客户主题/任务类型/来源/
+       BU/DQ/Match/SLA/风险），右栏每多占 60px 就意味着列表多一段横向滚动。 */
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 20vw, 380px);
+    gap: 16px;
+    align-items: start;
+  }
+  /* 列表容器必须 min-width:0：grid 子项默认 min-width:auto 会被 el-table 的列宽总和撑破，
+     导致整页（含页头）出现横向滚动、任务编号列被滚出视口。 */
+  .ap-list {
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* 列表全宽 + 点击行弹出审批详情弹窗（原 .ap-layout 双栏已移除） */
+  .ap-list-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--g-text);
+    margin-bottom: 4px;
+  }
+  /* 「客户/主题」单元格：名称 + 「同主体在途N」标签同一行。
+     必须 min-width:0 —— flex 子项默认 min-width:auto，长名称会把标签挤出单元格。 */
+  .ap-subject {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .ap-subject-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* 重复核验标签：danger 色 + plain，和列表行内「重复·在途N」同一语义（重复但可继续） */
+  .ap-dup-tag {
+    flex: 0 0 auto;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 11px;
+  }
+  /* 审批详情弹窗内的加载占位 */
+  .ap-dlg-loading {
+    min-height: 160px;
+  }
+  /* 右侧速览（只读）底部：进入审批入口 */
+  .ap-quick-foot {
+    border-top: 1px dashed var(--g-divider);
+    padding-top: 10px;
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    .el-button {
+      width: 100%;
+    }
+  }
+  .ap-quick-hint {
+    font-size: 12px;
+    color: var(--g-text2);
+    line-height: 1.5;
+  }
+  /* 审批弹窗内申请信息三组一行铺开（提交人 / 当前节点 / SLA） */
+  .ap-dlg .ap-detail-body .h-kv {
+    grid-template-columns: repeat(3, 96px 1fr);
+  }
+  .ap-detail {
+    background: var(--g-card);
+    border: 1px solid var(--g-divider);
+    border-radius: 8px;
+    padding: 14px 16px;
+    position: sticky;
+    top: 0;
+  }
+  .ap-detail-head {
+    border-bottom: 1px solid var(--g-divider);
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    b {
+      font-size: 13px;
+      color: var(--g-text2);
+    }
+    .ap-detail-name {
+      margin: 4px 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--g-text);
+    }
+    .el-tag {
+      margin-right: 6px;
+    }
+    /* 元信息行：标签居左、操作按钮居右，不再挤在一行 */
+    .ap-detail-meta {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .ap-detail-tags {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+      .el-tag {
+        margin-right: 0;
+        margin-bottom: 4px;
+      }
+    }
+    .ap-detail-ops {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      white-space: nowrap;
+    }
+  }
+  .ap-detail-body {
+    h4 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--g-text);
+      margin: 14px 0 6px;
+    }
+    .h-kv {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 8px 14px;
+      font-size: 13px;
+      > div:nth-child(odd) {
+        color: var(--g-text2);
+      }
+      > div:nth-child(even) {
+        color: var(--g-text);
+      }
+    }
+    .ap-check {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      div {
+        background: var(--g-content);
+        border: 1px solid var(--g-divider);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        color: var(--g-text);
+        line-height: 1.5;
+      }
+    }
+    .ap-decisions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .ap-tag {
+      background: #eef3f8;
+      border-color: #c9dcec;
+      color: #2f6088;
+    }
+    .ap-evidence {
+      background: #f7fafc;
+      border: 1px solid var(--g-divider);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--g-text);
+      line-height: 1.55;
+    }
+
+    /* 治理证据：JSON 快照逐条渲染为「标签 / 值」 */
+    .ap-ev-row {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      gap: 6px;
+      padding: 3px 0;
+
+      & + .ap-ev-row {
+        border-top: 1px dashed var(--g-divider);
+      }
+    }
+
+    .ap-ev-key {
+      color: var(--g-text2);
+    }
+
+    .ap-ev-val {
+      color: var(--g-text);
+      word-break: break-all;
+    }
+
+    /* 候选字段级对比（借鉴 DCR Matching Review：绿=一致 / 红=不一致 / 灰=空缺） */
+    .ap-cand {
+      border: 1px solid var(--g-divider);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .ap-cand-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    .ap-cand-hint {
+      color: var(--g-text2);
+    }
+
+    .ap-cmp-head,
+    .ap-cmp-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 1fr 56px;
+      gap: 8px;
+      align-items: center;
+      padding: 4px 0;
+    }
+
+    .ap-cmp-head {
+      color: var(--g-text2);
+      border-bottom: 1px solid var(--g-divider);
+      padding-bottom: 6px;
+    }
+
+    .ap-cmp-row + .ap-cmp-row {
+      border-top: 1px dashed var(--g-divider);
+    }
+
+    .ap-cmp-label {
+      color: var(--g-text);
+      font-weight: 600;
+    }
+
+    .ap-cmp-val {
+      padding: 3px 8px;
+      border-radius: 4px;
+      word-break: break-all;
+      line-height: 1.4;
+
+      &.is-match {
+        background: #f0f9eb;
+        color: #529b2e;
+      }
+
+      &.is-diff {
+        background: #fef0f0;
+        color: #f56c6c;
+      }
+
+      &.is-empty {
+        background: #f4f4f5;
+        color: #909399;
+      }
+    }
+
+    .ap-cmp-flag {
+      text-align: center;
+    }
+
+    .ap-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--g-divider);
+    }
+  }
+}
+
+/* ============================ 响应式 ============================ */
+@media (max-width: 1280px) {
+  .cmd-poc {
+    .stat-grid,
+    .admin-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .dash-bottom,
+    .compare,
+    .two-col,
+    .flow-compare,
+    .ap-layout {
+      /* minmax(0,1fr) 而非 1fr：单列时列宽不得被 el-table 的列宽总和撑开（否则整页横向滚动） */
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}
+
+/* ============ 审批动作二次确认（Confirm 挂载在 body，故写在 .cmd-poc 外层） ============ */
+.ap-action-confirm {
+  /* EP 默认 420px 会把「执行合并」这类词硬断行，稍加宽保证文案可读；小屏不外溢 */
+  width: 520px !important;
+  max-width: calc(100vw - 40px);
+
+  .el-message-box__message {
+    max-height: 45vh;
+    overflow-y: auto;
+    line-height: 1.75;
+  }
+
+  /* 突出被操作对象（客户名 / One ID），长文案里一眼能确认改的是谁 */
+  .el-message-box__message b {
+    color: var(--el-color-primary, #409eff);
+  }
+}
+
+/* ==== 请求失败条（列表 / 指标通用）====
+   把「拿不到数据」与「没有数据」区分开：502 / 后端重启时必须显性报错并给重试入口，
+   否则页面上的「暂无数据 / 0」会被读成业务事实（复测报告 BUG-01）。 */
+.load-error{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid #f2cdc6;border-radius:10px;background:#fdf2f0;color:#8f3021;font-size:13.5px;line-height:1.6}
+.load-error-ic{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 auto;border-radius:50%;background:#d34a36;color:#fff;font-size:12px;font-weight:700}
+.load-error-msg{flex:1;min-width:0;word-break:break-word}
+.load-error-retry{flex:0 0 auto;font-weight:600}

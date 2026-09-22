@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_CmdApproval"
+                  targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="CmdApproval" name="客户主数据审批" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_1" name="开始">
+      <bpmn:outgoing>f_start_apply</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="Activity_Apply" name="提交客户申请">
+      <bpmn:incoming>f_start_apply</bpmn:incoming>
+      <bpmn:outgoing>f_apply_bu</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:userTask id="Activity_BUReview" name="BU初审">
+      <bpmn:incoming>f_apply_bu</bpmn:incoming>
+      <bpmn:outgoing>f_bu_gw</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_1" name="是否跨BU/驳回" default="f_bu_approve">
+      <bpmn:incoming>f_bu_gw</bpmn:incoming>
+      <bpmn:outgoing>f_bu_reject</bpmn:outgoing>
+      <bpmn:outgoing>f_bu_gc</bpmn:outgoing>
+      <bpmn:outgoing>f_bu_approve</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:userTask id="Activity_GCReview" name="GC决策">
+      <bpmn:incoming>f_bu_gc</bpmn:incoming>
+      <bpmn:outgoing>f_gc_gw</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_2" name="是否驳回" default="f_gc_approve">
+      <bpmn:incoming>f_gc_gw</bpmn:incoming>
+      <bpmn:outgoing>f_gc_reject</bpmn:outgoing>
+      <bpmn:outgoing>f_gc_approve</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:endEvent id="EndEvent_Approve" name="审批通过">
+      <bpmn:incoming>f_bu_approve</bpmn:incoming>
+      <bpmn:incoming>f_gc_approve</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="EndEvent_Reject" name="审批驳回">
+      <bpmn:incoming>f_bu_reject</bpmn:incoming>
+      <bpmn:incoming>f_gc_reject</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="f_start_apply" sourceRef="StartEvent_1" targetRef="Activity_Apply"/>
+    <bpmn:sequenceFlow id="f_apply_bu" sourceRef="Activity_Apply" targetRef="Activity_BUReview"/>
+    <bpmn:sequenceFlow id="f_bu_gw" sourceRef="Activity_BUReview" targetRef="Gateway_1"/>
+    <bpmn:sequenceFlow id="f_bu_reject" name="驳回" sourceRef="Gateway_1" targetRef="EndEvent_Reject">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">rejected == True</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_bu_gc" name="跨BU升级" sourceRef="Gateway_1" targetRef="Activity_GCReview">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">crossBu == True</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_bu_approve" name="直接批准" sourceRef="Gateway_1" targetRef="EndEvent_Approve"/>
+    <bpmn:sequenceFlow id="f_gc_gw" sourceRef="Activity_GCReview" targetRef="Gateway_2"/>
+    <bpmn:sequenceFlow id="f_gc_reject" name="驳回" sourceRef="Gateway_2" targetRef="EndEvent_Reject">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">rejected == True</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_gc_approve" name="决策完成" sourceRef="Gateway_2" targetRef="EndEvent_Approve"/>
+  </bpmn:process>
+</bpmn:definitions>

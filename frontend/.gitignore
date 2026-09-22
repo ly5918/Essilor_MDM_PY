@@ -1,0 +1,61 @@
+.DS_Store
+.history
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+**/*.log
+
+tests/**/coverage/
+tests/e2e/reports
+selenium-debug.log
+
+# Editor directories and files
+.idea
+.vscode
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.local
+
+package-lock.json
+yarn.lock
+
+# 编译生成的文件
+auto-imports.d.ts
+components.d.ts
+
+# AI 工具本地数据
+.claude/
+.codex/
+.codeartsdoer/
+.workbuddy/
+
+# 临时文件
+_tmp_*
+~$*
+# 本地调试/联调产物（不入库）
+probe.txt
+det*.json
+tscheck.exit
+txn-*.png
+tpl*.xlsx
+tpl*.png
+tpl.json
+lint.exit
+_inspect_*
+
+# Excel 模板调试件
+tpl_*.xlsx
+
+# 临时截图/诊断产物（不入库）
+_probe_*
+diag_*
+proc_info.txt
+
+# 备份文件（不入库）
+*.bak
+*.bak2
