@@ -29,10 +29,18 @@ async def match_rule_list():
 @router.post("/rule")
 async def match_rule_create(body: dict = Body(...)):
     body = dict(body)
+    body.setdefault("is_preset", "N")
+    body.setdefault("version_no", "v1")
+    body.setdefault("status", "0")  # 草稿：MATCH_RULE_CHANGE 审批通过后置 1
     body.setdefault("create_time", datetime.now())
     async with get_engine().begin() as conn:
         vals = await dynamic_insert(conn, table("match_rule"), body)
-    return R.ok(vals, msg="匹配规则已创建")
+        # 总设计泳道：规则调整 → BU 候选验证 → GC 候选验证 → 生效
+        from ..services.rule_flow import start_rule_change_flow
+        task_no = await start_rule_change_flow(
+            conn, "MATCH_RULE_CHANGE", "match_rule", int(vals.get("id") or 0),
+            {**body, "id": vals.get("id")}, "新增", actor="demo")
+    return R.ok({**vals, "taskNo": task_no}, msg="匹配规则草稿已创建，审批通过后生效")
 
 
 @router.get("/rule/{rule_id}")
@@ -52,8 +60,20 @@ async def match_rule_update(rule_id: int, body: dict = Body(...)):
     body = {k: v for k, v in dict(body).items() if k != "id"}
     body.setdefault("update_time", datetime.now())
     async with get_engine().begin() as conn:
-        await dynamic_update(conn, table("match_rule"), rule_id, body)
-    return R.ok(msg="匹配规则已更新")
+        old = (await conn.execute(
+            select(table("match_rule")).where(table("match_rule").c.id == rule_id))).mappings().first()
+        if old is None:
+            return R.fail("匹配规则不存在", code=404)
+        old = dict(old)
+        # 修改落草稿（status=0），审批通过后恢复生效；拒绝则回滚旧值
+        new_vals = {**body, "status": "0"}
+        await dynamic_update(conn, table("match_rule"), rule_id, new_vals)
+        from ..services.rule_flow import start_rule_change_flow
+        task_no = await start_rule_change_flow(
+            conn, "MATCH_RULE_CHANGE", "match_rule", rule_id,
+            {**{k: old.get(k) for k in ("rule_code", "rule_name", "version_no")},
+             **body}, "修改", actor="demo")
+    return R.ok({"taskNo": task_no}, msg="匹配规则修改已提交审批，通过后生效")
 
 
 @router.delete("/rule/{rule_id}")

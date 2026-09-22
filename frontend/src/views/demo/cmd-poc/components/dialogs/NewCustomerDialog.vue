@@ -121,7 +121,20 @@
         </div>
         <div class="rcpt-cell">
           <label>匹配结论</label>
-          <el-tag size="small" :type="matchTagType" effect="plain">{{ submitResult.matchStateName || '新客户' }}</el-tag>
+          <!-- 命中既有记录时结论可点击：直接打开命中主档详情，提交人不用自己去列表里翻那条记录比对 -->
+          <el-tooltip
+            :disabled="!submitResult.matchedOneId"
+            content="点击查看命中记录的主档详情"
+            placement="top"
+          >
+            <el-tag
+              size="small"
+              :type="matchTagType"
+              effect="plain"
+              :class="{ 'is-clickable': submitResult.matchedOneId }"
+              @click="onViewMatched"
+            >{{ submitResult.matchStateName || '新客户' }}</el-tag>
+          </el-tooltip>
         </div>
       </div>
 
@@ -131,7 +144,11 @@
           <tbody>
             <tr>
               <th>One ID</th>
-              <td class="rcpt-mono">{{ submitResult.matchedOneId }}</td>
+              <td class="rcpt-mono">
+                <el-link type="primary" :underline="false" class="rcpt-link" @click="onViewMatched">
+                  {{ submitResult.matchedOneId }}
+                </el-link>
+              </td>
             </tr>
             <tr>
               <th>客户名称</th>
@@ -220,7 +237,7 @@ defineOptions({ name: 'CmdPocNewCustomerDialog' });
 
 defineProps<{ payload?: Record<string, unknown> }>();
 
-const { publishedFields, metadataFields, loadMetadataFields, loadCustomers, ocrPrefill, setOcrPrefill, refreshBadge } = useCmdPoc();
+const { publishedFields, metadataFields, loadMetadataFields, loadCustomers, ocrPrefill, setOcrPrefill, refreshBadge, openDialog } = useCmdPoc();
 
 /** 已在「业务上下文」维护或由系统托管的字段，不在动态区重复渲染 */
 const CONTEXT_FIELD_CODES = ['customer_type', 'bu_scope', 'product_line', 'source_system', 'status'];
@@ -438,9 +455,10 @@ const fmtReceiptTime = (value?: string) => (value ? value.replace('T', ' ').slic
 
 /** 提交申请：后端落主档 + 生成待办 + 启动流程实例，随后刷新客户列表 */
 const submit = async (): Promise<string> => {
-  // 已出回执时主按钮表示「完成并关闭」：直接返回，绝不二次提交
+  // 已出回执时主按钮表示「完成并关闭」：置关窗标志并返回，绝不二次提交
   // （否则同一家客户会被反复建号，正是本功能要拦的场景）
   if (submitResult.value) {
+    receiptAcknowledged.value = true;
     return `本次提交已完成：One ID ${submitResult.value.oneId ?? '-'}｜申请编号 ${submitResult.value.taskNo ?? '-'}`;
   }
   // 1) 前端先按「动态必填字段」校验：缺失字段以红字标注并汇总提示，
@@ -562,6 +580,21 @@ defineExpose({ submit, keepOpenAfterSubmit, confirmText });
     .rcpt-peer-title {
       color: var(--el-color-warning);
     }
+  }
+
+  /* 匹配结论可点击态：命中既有记录时（EXACT / SUSPECTED）标签呈现链接手感 */
+  .el-tag.is-clickable {
+    cursor: pointer;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  .rcpt-link {
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 12.5px;
+    vertical-align: baseline;
   }
 }
 

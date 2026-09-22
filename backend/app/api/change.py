@@ -176,9 +176,10 @@ async def effect_change(request_code: str):
             table("cmd_change_request").update()
             .where(table("cmd_change_request").c.request_code == request_code)
             .values(status="EFFECTIVE", effective_time=datetime.now()))
-        # 若停用类变更，更新主档状态
-        if cr["change_type"] in ("DEACTIVATE",) and cr.get("target_status"):
+        # 若停用类变更，更新主档状态（change_type 大小写不敏感；
+        # target_status 统一小写——全库主档状态约定为 active/inactive）
+        if (cr["change_type"] or "").upper() == "DEACTIVATE" and cr.get("target_status"):
             await conn.execute(
                 table("cmd_customer").update().where(table("cmd_customer").c.one_id == cr["one_id"])
-                .values(status=cr["target_status"], effective_to=datetime.now()))
+                .values(status=(cr["target_status"] or "").lower(), effective_to=datetime.now()))
     return R.ok(msg="变更已生效")

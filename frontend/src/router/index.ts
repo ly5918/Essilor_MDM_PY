@@ -54,7 +54,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 登录页：1:1 还原原型（左品牌区 + 右登录卡片）
-    path: '/cmd-poc/login',
+    path: '/cmd-poc-py/login',
     name: 'CmdPocLogin',
     component: () => import('@/views/demo/cmd-poc/login.vue'),
     hidden: true,
@@ -62,7 +62,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 工作台：全屏路由（不挂 Layout），原生侧边菜单 / 原生导航栏均不渲染
-    path: '/cmd-poc',
+    path: '/cmd-poc-py',
     name: 'CmdPoc',
     component: () => import('@/views/demo/cmd-poc/index.vue'),
     hidden: true,
@@ -70,7 +70,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 工作台 · 角色入口：Business User（截图 1）
-    path: '/cmd-poc/business',
+    path: '/cmd-poc-py/business',
     name: 'CmdPocBusiness',
     component: () => import('@/views/demo/cmd-poc/role-business.vue'),
     hidden: true,
@@ -78,7 +78,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 工作台 · 角色入口：Data Steward BU Scope（截图 2）
-    path: '/cmd-poc/bu',
+    path: '/cmd-poc-py/bu',
     name: 'CmdPocBu',
     component: () => import('@/views/demo/cmd-poc/role-bu.vue'),
     hidden: true,
@@ -86,7 +86,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 工作台 · 角色入口：Data Steward GC Scope（截图 3）
-    path: '/cmd-poc/gc',
+    path: '/cmd-poc-py/gc',
     name: 'CmdPocGc',
     component: () => import('@/views/demo/cmd-poc/role-gc.vue'),
     hidden: true,
@@ -94,7 +94,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 工作台 · 角色入口：Platform Admin（截图 4）
-    path: '/cmd-poc/admin',
+    path: '/cmd-poc-py/admin',
     name: 'CmdPocAdmin',
     component: () => import('@/views/demo/cmd-poc/role-admin.vue'),
     hidden: true,
@@ -102,7 +102,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   },
   {
     // CMD POC 工作台 · 角色入口：Auditor Read Only（截图 5）
-    path: '/cmd-poc/audit',
+    path: '/cmd-poc-py/audit',
     name: 'CmdPocAudit',
     component: () => import('@/views/demo/cmd-poc/role-audit.vue'),
     hidden: true,
@@ -121,7 +121,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   {
     path: '',
     component: Layout,
-    redirect: '/cmd-poc/login',
+    redirect: '/cmd-poc-py/login',
     children: [
       {
         path: '/index',

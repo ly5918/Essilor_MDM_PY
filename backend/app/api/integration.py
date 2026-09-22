@@ -114,30 +114,26 @@ async def run_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=20
 @router.post("/run/{run_id}/retry")
 @router.put("/run/{run_id}/retry")
 async def retry_run(run_id: int):
-    """重试失败批次：复制一条新 run 记录并置为成功（模拟）。"""
+    """失败批次重试：生成集成失败处理审批（治理批准后由回调生成重试运行）。"""
     async with get_engine().begin() as conn:
         src = await get_row(conn, table("int_run"), run_id)
         if not src:
             return R.fail("批次不存在")
-        vals = await dynamic_insert(conn, table("int_run"), {
-            "run_code": f"RUN-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}",
-            "endpoint_code": src.get("endpoint_code"),
-            "endpoint_name": src.get("endpoint_name"),
-            "direction": src.get("direction"),
-            "target_system": src.get("target_system"),
-            "biz_type": src.get("biz_type"),
-            "trigger_type": "MANUAL_RETRY",
-            "run_status": "SUCCESS",
-            "total_count": src.get("total_count") or 0,
-            "success_count": src.get("total_count") or 0,
-            "failed_count": 0,
-            "attempt_count": 1,
-            "max_attempt": src.get("max_attempt") or 3,
-            "parent_run_id": run_id,
-            "start_time": datetime.now(), "end_time": datetime.now(),
-            "duration_ms": 120,
-        })
-    return R.ok({"run_code": vals.get("run_code")}, msg="重试批次已生成")
+        # 已有在途审批则不重复发起
+        from sqlalchemy import select as _select
+        inflight = (await conn.execute(
+            _select(table("cmd_approval_task").c.task_no).where(
+                table("cmd_approval_task").c.biz_type == "INTEGRATION_FAIL",
+                table("cmd_approval_task").c.biz_id == str(run_id),
+                table("cmd_approval_task").c.status == "PENDING",
+                table("cmd_approval_task").c.del_flag == "0"))).first()
+        if inflight:
+            return R.ok({"taskNo": inflight[0]}, msg="该批次已有在途失败处理审批")
+        from ..services.rule_flow import start_integration_retry_flow
+        task_no = await start_integration_retry_flow(conn, run_id, src)
+        if task_no is None:
+            return R.fail("仅失败/重试中的批次可发起失败处理审批")
+    return R.ok({"taskNo": task_no}, msg="集成失败处理审批已发起")
 
 
 @router.get("/message/list")

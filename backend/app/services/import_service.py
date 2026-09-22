@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from sqlalchemy import func, select
+
 from ..core.db import table
 from ..core.query import dynamic_insert
 from ..repositories import import_repo
@@ -277,12 +279,49 @@ def _cell_str(v) -> Optional[str]:
     return s or None
 
 
-def parse_upload_rows(file_bytes: bytes) -> List[Dict[str, str]]:
-    """解析上传 xlsx：首行表头 → 按列名取值的字典列表（空行跳过）。"""
+def parse_upload_rows(file_bytes: bytes, file_name: str = "") -> List[Dict[str, str]]:
+    """解析上传文件：首行表头 → 按列名取值的字典列表（空行跳过）。
+
+    支持 xlsx（openpyxl）与 CSV（csv 模块，对齐 Java readCsvRows 口径）：
+    - 文件名按 .csv/.xlsx 判别；无后缀时按魔数兜底（xlsx 是 ZIP，PK\\x03\\x04 开头）；
+    - CSV 用 utf-8-sig 解码（去 BOM），csv 模块自动处理包裹引号与逗号转义；
+    - 解析失败收敛为 ImportBizError（可读业务提示），不让原始异常裸奔成 500。
+    """
     import io as _io
 
+    name = (file_name or "").lower()
+    is_csv = name.endswith(".csv")
+    if not name and file_bytes[:4] != b"PK\x03\x04":
+        is_csv = True
+
+    if is_csv:
+        import csv
+        try:
+            text = file_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError as e:
+            raise ImportBizError("CSV 文件解码失败：请确认使用 UTF-8 编码保存") from e
+        reader = csv.reader(_io.StringIO(text))
+        raw = [row for row in reader]
+        # 去掉整行全空的行
+        raw = [r for r in raw if any((c or "").strip() for c in r)]
+        if not raw:
+            raise ImportBizError("CSV 文件没有可导入的数据行")
+        header = [(c or "").strip() for c in raw[0]]
+        rows: List[Dict[str, str]] = []
+        for r in raw[1:]:
+            item = {}
+            for c_idx, col_name in enumerate(header):
+                if col_name:
+                    item[col_name] = r[c_idx].strip() if c_idx < len(r) else ""
+            rows.append(item)
+        return rows
+
     import openpyxl
-    wb = openpyxl.load_workbook(_io.BytesIO(file_bytes), read_only=True, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(_io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception as e:
+        # 损坏/非 Excel 文件（如把 CSV 改名 .xlsx）收敛为可读业务提示，不裸奔 500
+        raise ImportBizError(f"上传文件解析失败：请确认使用有效的 Excel(.xlsx) 或 CSV 文件（{e}）") from e
     ws = wb.active
     rows: List[Dict[str, str]] = []
     header: List[str] = []
@@ -332,7 +371,7 @@ async def create_job_from_upload(conn, *, template_code: str, file_name: str,
     if not mappings:
         raise ImportBizError(f"模板[{template['template_name']}]未配置字段映射，无法解析上传文件")
 
-    rows = parse_upload_rows(file_bytes)
+    rows = parse_upload_rows(file_bytes, file_name)
 
     # ---- 文件级预检：缺列或无数据行 → 整批退回，不建任务 ----
     missing = pre_check_header(rows, mappings)
@@ -507,6 +546,21 @@ async def row_action(conn, row_id: int, action: str, one_id: Optional[str],
         target = one_id or row.get("one_id")
         if not target:
             raise ImportBizError("请填写要关联的 One ID")
+        # 守卫 1：仅 Suspected 行可关联（已 Exact / Invalid 的行重复治理会污染分流统计）
+        if (row.get("result_type") or "") != RESULT_SUSPECTED:
+            raise ImportBizError(
+                f"该行分流结论为 {row.get('result_type') or '未知'}，仅 Suspected 行可执行「关联已有」")
+        # 守卫 2：在途合并审批防重——同一行已有 PENDING/RETURNED 的 MERGE 审批时拒绝重复发起
+        #（否则每点一次「关联已有」就多一条重复 MERGE 待办，Java 侧已修同样问题）
+        dup_cnt = (await conn.execute(
+            select(func.count()).select_from(table("cmd_approval_task")).where(
+                table("cmd_approval_task").c.biz_type == "MERGE",
+                table("cmd_approval_task").c.biz_id == str(row["id"]),
+                table("cmd_approval_task").c.status.in_(["PENDING", "RETURNED"]),
+                table("cmd_approval_task").c.del_flag == "0"))).scalar() or 0
+        if dup_cnt:
+            raise ImportBizError(
+                "该行已存在在途的跨BU合并审批，请勿重复发起（在「治理与审批」队列中处理即可）")
         target_customer = await import_repo.find_active_by_one_id(conn, target)
         if target_customer and job.get("bu_scope") and \
                 job["bu_scope"] != target_customer.get("bu_scope"):
@@ -594,7 +648,8 @@ async def submit_import_approval(conn, job: dict, outcome: Tuple[int, int, int, 
         risk_level="High" if invalid > 0 else "Medium",
         duplicate_state="SUSPECTED" if suspected > 0 else "NEW",
         cross_bu_flag="N", submit_time=now(), sla_due=now(), sla_state="NORMAL",
-        dq_score=avg_dq, evidence_json=evidence, remark="批量导入 New 行待确认"))
+        dq_score=avg_dq, evidence_json=evidence, remark="批量导入 New 行待确认",
+        create_time=now(), update_time=now(), create_by=0))
     await log_action(conn, task_id=task_vals.get("id"), task_no=task_no, one_id=None,
                      action_type="SUBMIT", action_name="提交批量导入确认",
                      from_node_code="APPLY", to_node_code="BU_REVIEW",
@@ -665,7 +720,9 @@ async def launch_row_merge(conn, job: dict, row: dict, target_customer: dict,
     from ..services.sequence import gen_code
     from ..services.trace import log_action
 
-    task_no = await gen_code(conn, "AP-", 4, "APPROVAL")
+    # 合并审批统一用 MG- 号（与 governance.launch_merge 共享 MERGE_APPROVAL 序号池，
+    # 编号连续不撞号），与普通审批 AP- 号区分，便于按号识别业务类型
+    task_no = await gen_code(conn, "MG-", 4, "MERGE_APPROVAL")
     snapshot = {"mode": "ROW_LINK", "rowId": row["id"], "targetOneId": target_customer["one_id"]}
     evidence = {
         "合并模式": "批量导入行 → 跨BU存量主档（关联已有 One ID，需 GC 决策）",
@@ -683,7 +740,8 @@ async def launch_row_merge(conn, job: dict, row: dict, target_customer: dict,
         risk_level="High", duplicate_state="SUSPECTED", cross_bu_flag="Y",
         one_id=target_customer["one_id"], submit_time=now(), sla_due=now(), sla_state="NORMAL",
         evidence_json=evidence, biz_snapshot_json=snapshot,
-        remark="导入行跨BU疑似重复，BU 发起合并审批"))
+        remark="导入行跨BU疑似重复，BU 发起合并审批",
+        create_time=now(), update_time=now(), create_by=0))
     await log_action(conn, task_id=merge_task_vals.get("id"), task_no=task_no,
                      one_id=target_customer["one_id"],
                      action_type="SUBMIT", action_name="发起跨BU合并（导入行关联已有）",

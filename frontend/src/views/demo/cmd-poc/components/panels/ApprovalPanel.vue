@@ -392,17 +392,22 @@ const sceneText = computed(() => {
 
 /** 治理证据：后端以 JSON 快照下发，逐条渲染为「标签 / 值」；非 JSON 时原样展示 */
 const evidenceRows = computed<Array<{ label: string; value: string }>>(() => {
-  const text = (detail.value?.evidence ?? '').trim();
-  if (!text.startsWith('{')) return [];
-  try {
-    const obj = JSON.parse(text) as Record<string, unknown>;
-    return Object.entries(obj).map(([label, value]) => ({
-      label,
-      value: value === null || value === undefined ? '—' : String(value)
-    }));
-  } catch {
-    return [];
+  const raw: unknown = detail.value?.evidence;
+  // 后端可能下发对象（JSON 列）或 JSON 字符串（旧快照），两种形态都兼容
+  let obj: Record<string, unknown> | null = null;
+  if (raw && typeof raw === 'object') {
+    obj = raw as Record<string, unknown>;
+  } else {
+    const text = String(raw ?? '').trim();
+    if (text.startsWith('{')) {
+      try { obj = JSON.parse(text) as Record<string, unknown>; } catch { obj = null; }
+    }
   }
+  if (!obj) return [];
+  return Object.entries(obj).map(([label, value]) => ({
+    label,
+    value: value === null || value === undefined ? '—' : String(value)
+  }));
 });
 
 /**

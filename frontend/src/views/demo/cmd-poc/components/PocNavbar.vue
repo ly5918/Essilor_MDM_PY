@@ -44,6 +44,7 @@
         </div>
         <template #dropdown>
           <el-dropdown-menu>
+            <el-dropdown-item command="userManual">用户手册</el-dropdown-item>
             <el-dropdown-item command="manual">操作手册</el-dropdown-item>
             <el-dropdown-item command="setLayout">布局设置</el-dropdown-item>
             <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
@@ -79,7 +80,7 @@ const settingRef = ref<InstanceType<typeof Settings>>();
 
 /** 角色切换：每个角色对应一个独立路由页面 */
 const onRoleChange = () => {
-  const target = `/cmd-poc/${roleKey.value}`;
+  const target = `/cmd-poc-py/${roleKey.value}`;
   if (router.currentRoute.value.path !== target) {
     router.push(target);
     ElMessage.info(`已切换为模拟角色：${role.value.name}（${role.value.scope}）`);
@@ -95,6 +96,12 @@ const openManual = () => {
   window.open(url, '_blank');
 };
 
+/** 打开用户手册（新版，实时截图与文案独立维护） */
+const openUserManual = () => {
+  const url = `${import.meta.env.BASE_URL}help/cmd-poc-user-manual.html`;
+  window.open(url, '_blank');
+};
+
 /** 退出登录 */
 const logout = async () => {
   await ElMessageBox.confirm('确定注销并退出系统吗？', '提示', {
@@ -105,12 +112,13 @@ const logout = async () => {
   await userStore.logout();
   tab.closeAllPage();
   // 退出后回到 CMD POC 登录页
-  router.replace('/cmd-poc/login');
+  router.replace('/cmd-poc-py/login');
 };
 
 const commandMap: Record<string, () => void> = {
   setLayout: openSetting,
   manual: openManual,
+  userManual: openUserManual,
   logout
 };
 const handleCommand = (command: string) => {

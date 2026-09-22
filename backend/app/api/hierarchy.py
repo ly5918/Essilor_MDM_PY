@@ -126,11 +126,60 @@ async def relation_history(page: int = Query(1, ge=1), size: int = Query(50, ge=
 
 @router.post("/relation")
 async def add_relation(body: dict = Body(...)):
+    import uuid as _uuid
     body = dict(body)
     body.setdefault("create_time", datetime.now())
+    # NOT NULL 无默认值列兜底
+    body.setdefault("relation_code", f"REL-{_uuid.uuid4().hex[:8].upper()}")
+    body.setdefault("hierarchy_type", "LEGAL")
+    body.setdefault("relation_type", "SUB")
+    body.setdefault("cross_bu_flag", "N")
+    body.setdefault("source_type", "MANUAL")
+    body.setdefault("effective_from", datetime.now())
+    # 总设计泳道：层级关系变更走 HIER_RELATION 审批流（提交→BU 审核→生效）
+    body.setdefault("status", "PendingApproval")
     async with get_engine().begin() as conn:
         vals = await dynamic_insert(conn, table("cmd_hierarchy_relation"), body)
-    return R.ok(vals, msg="层级关系已建立")
+        from ..services.sequence import gen_code, next_id
+        from ..workflow.engine import start_instance
+        task_no = await gen_code(conn, "AP-", 4, "APPROVAL")
+        rel_code = vals.get("relation_code") or str(vals.get("id"))
+        child = body.get("child_one_id") or ""
+        parent = body.get("parent_one_id") or ""
+        evidence = {
+            "关系编码": rel_code,
+            "父节点": parent,
+            "子节点": child,
+            "关系类型": body.get("relation_type") or "",
+            "变更原因": body.get("change_reason") or "",
+        }
+        task_id = await next_id(conn, "cmd_approval_task")
+        await conn.execute(table("cmd_approval_task").insert().values(
+            id=task_id, task_no=task_no, task_category="APPROVAL",
+            biz_type="HIER_RELATION", biz_id=str(vals.get("id")),
+            biz_title=f"层级关系变更：{rel_code}（{child} → {parent}）",
+            one_id=child or None, scene_code="HIER_RELATION",
+            bu_scope=body.get("bu_scope") or "Global",
+            scope="BU", current_node_code="BU_REVIEW", current_node_name="BU Scope 层级审核",
+            assignee_role="BU_STEWARD", status="PENDING", risk_level="Medium",
+            duplicate_state="NEW", cross_bu_flag=body.get("cross_bu_flag") or "N",
+            submit_time=datetime.now(), del_flag="0", create_by=0, create_time=datetime.now(),
+            evidence_json=evidence, biz_snapshot_json={"relationId": vals.get("id"), "relCode": rel_code},
+            remark="层级关系变更审批（审核通过后关系生效）"))
+        await start_instance(
+            scene_code="HIER_RELATION", biz_type="HIER_RELATION", biz_no=task_no,
+            variables={
+                "taskNo": task_no, "bizType": "HIER_RELATION", "oneId": child or None,
+                "buScope": body.get("bu_scope") or "Global", "crossBu": False,
+                "riskLevel": "Medium", "duplicateState": "NEW", "dqScore": None,
+                "sceneCode": "HIER_RELATION",
+            })
+        # 回写审批引用
+        from sqlalchemy import update as _upd
+        await conn.execute(table("cmd_hierarchy_relation").update()
+                           .where(table("cmd_hierarchy_relation").c.id == vals["id"])
+                           .values(approval_id=task_id))
+    return R.ok({**vals, "taskNo": task_no}, msg="层级关系申请已提交审批")
 
 
 @router.post("/child")

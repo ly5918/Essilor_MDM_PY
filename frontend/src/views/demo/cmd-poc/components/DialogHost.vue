@@ -112,6 +112,13 @@ interface DialogBody {
    */
   nextDialog?: DialogKey | '';
   /**
+   * 可选：确认按钮此时应当直接关闭弹窗（优先级高于 keepOpenAfterSubmit）。
+   * 例：新建客户申请命中重复 → 首次提交保持打开展示《查重回执》，回执展开后
+   * 主按钮变为「完成并关闭」，此时再点确认就必须真的关窗——
+   * 否则用户可以无限点击、每次都弹一条「本次提交已完成」，产生重复提交的错觉。
+   */
+  closeAfterConfirm?: boolean;
+  /**
    * 可选：提交过程中动态改写主按钮文案（覆盖 DIALOG_MAP 里的 confirmText）。
    * 例：新建客户申请命中重复 → 出《查重回执》后主按钮由「提交申请」变为「完成并关闭」，
    * 防止用户以为还要再点一次而把同一家客户重复建号。
@@ -167,8 +174,10 @@ const onConfirm = async () => {
     // 子组件要求提交后跳转（如 OCR 写回表单 → 新建客户申请），先取出来再切，避免被 closeDialog 清空
     const next = body?.nextDialog;
     ElMessage.success(message || `${displayTitle.value ?? '操作'}：模拟操作已完成并写入审计日志`);
-    // 模拟测试类弹窗（keepOpenAfterSubmit）留在原地展示结果，由用户手动关闭
-    if (!body?.keepOpenAfterSubmit) closeDialog();
+    // 模拟测试类弹窗（keepOpenAfterSubmit）留在原地展示结果，由用户手动关闭；
+    // 但组件明确给出 closeAfterConfirm（如查重回执已展开、按钮已是「完成并关闭」）时必须真关，
+    // 防止用户反复点确认、每次都重复弹「本次提交已完成」。
+    if (body?.closeAfterConfirm || !body?.keepOpenAfterSubmit) closeDialog();
     if (next) openDialog(next);
   } catch (error) {
     // 业务校验失败由子组件自行提示，此处仅兜底

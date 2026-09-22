@@ -239,7 +239,7 @@ const doLogin = (mode: 'account' | 'microsoft') => {
   window.setTimeout(() => {
     loading.value = false;
     ElMessage.success(mode === 'microsoft' ? 'Microsoft Entra ID 登录成功（POC 模拟）' : '登录成功（POC 模拟）');
-    router.push(`/cmd-poc/${role}`);
+    router.push(`/cmd-poc-py/${role}`);
   }, 400);
 };
 

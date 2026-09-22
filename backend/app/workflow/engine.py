@@ -45,7 +45,10 @@ def _get_spec():
     global _SPEC_CACHE
     if _SPEC_CACHE is None:
         parser = BpmnParser()
-        parser.add_bpmn_file(os.path.abspath(BPMN_PATH))
+        # 二进制读取（BPMN 带 XML encoding 声明，lxml 拒收 str；
+        # 也不能用默认 GBK 文本模式——Windows 下会 UnicodeDecodeError）
+        with open(os.path.abspath(BPMN_PATH), "rb") as f:
+            parser.add_bpmn_str(f.read())
         _SPEC_CACHE = parser.get_spec(PROCESS_ID)
     return _SPEC_CACHE
 

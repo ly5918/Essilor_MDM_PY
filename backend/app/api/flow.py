@@ -165,7 +165,11 @@ async def flow_instances(
     conn = await get_engine().connect()
     try:
         rows = [dict(r) for r in (await conn.execute(
-            select(t).where(*conds).order_by(t.c.create_time.desc())
+            select(t).where(*conds)
+            # 历史数据可能缺 create_time（旧导入链路未写），NULL 在 DESC 排序中沉底会导致
+            # 实例「看不见」——用 COALESCE 回退到 update_time/submit_time，再按 id 稳定排序
+            .order_by(func.coalesce(t.c.create_time, t.c.update_time, t.c.submit_time).desc(),
+                      t.c.id.desc())
             .limit(pageSize).offset((pageNum - 1) * pageSize))).mappings().all()]
         total = (await conn.execute(
             select(func.count()).select_from(t).where(*conds))).scalar() or 0

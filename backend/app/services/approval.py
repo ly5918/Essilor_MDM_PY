@@ -202,7 +202,12 @@ async def do_action(task_no: str, action: str, actor: str,
         # 更新审批任务行
         status = task["status"]
         if result["status"] == "COMPLETED":
-            status = "REJECTED" if outcome == "rejected" else "COMPLETED"
+            if action == "return":
+                # 退回BU：任务置 RETURNED 回 BU 队列修复（对齐 Java RETURN 口径），
+                # 不能走 outcome 默认 approved 分支误判成办结
+                status = "RETURNED"
+            else:
+                status = "REJECTED" if outcome == "rejected" else "COMPLETED"
         elif action == "reject":
             status = "REJECTED"
         # 升级后任务仍是「待决策」：保持 PENDING 并随节点切到 GC 队列。
@@ -238,7 +243,13 @@ async def do_action(task_no: str, action: str, actor: str,
         # （对齐 Java update.setScope(resolveScope(instance.getNodeCode(), ...))）
         if action == "escalate" or (next_role or "").upper() == "GC" or "GC" in (node or "").upper():
             update_vals["scope"] = "GC"
-        if result["status"] == "COMPLETED":
+        if action == "return":
+            # 退回BU：任务回到 BU 队列，当前节点回到申请起点等待修复重报
+            update_vals["scope"] = "BU"
+            update_vals["current_node_code"] = "APPLY"
+            update_vals["current_node_name"] = "创建客户申请"
+            update_vals["assignee_role"] = "BU_USER"
+        if result["status"] == "COMPLETED" and status != "RETURNED":
             update_vals["finish_time"] = datetime.now()
         await conn.execute(
             table("cmd_approval_task").update()
@@ -264,9 +275,19 @@ async def do_action(task_no: str, action: str, actor: str,
                 table("cmd_customer_application").select()
                 .where(table("cmd_customer_application").c.app_no == task_no))).mappings().first()
             if app is not None:
-                # 透传 GC/BU 决策键：create_new / exclude → 新建主档不链路已有
-                await publish_customer(conn, dict(app), outcome or "approved",
-                                       decision=action)
+                if action == "return":
+                    # 退回BU：申请退回待修复，绝不发布主档
+                    await conn.execute(
+                        table("cmd_customer_application").update()
+                        .where(table("cmd_customer_application").c.app_no == task_no)
+                        .values(status="returned"))
+                elif result["status"] == "COMPLETED":
+                    # 仅在流程真正走完时发布/驳回（修复：ESCALATE 时 outcome=None
+                    # 曾被 `outcome or "approved"` 兜底成 approved，升级即误发布主档）
+                    # 透传 GC/BU 决策键：create_new / exclude → 新建主档不链路已有
+                    await publish_customer(conn, dict(app), outcome or "approved",
+                                           decision=action)
+                # 流程仍在流转（如 ESCALATE）：不动申请、不发布主档
         elif biz_type == "MERGE" and outcome == "approved":
             await exec_merge_task(conn, task)
         elif biz_type == "IMPORT" and result["status"] == "COMPLETED":
@@ -280,6 +301,21 @@ async def do_action(task_no: str, action: str, actor: str,
                 table("cmd_change_request").update()
                 .where(table("cmd_change_request").c.request_code == task_no)
                 .values(status="APPROVED", approved_by=0, approved_time=datetime.now()))
+        elif biz_type in ("DQ_RULE_CHANGE", "MATCH_RULE_CHANGE") and result["status"] == "COMPLETED":
+            # 规则变更闭环：approve→规则生效（status=1）；reject→删草稿/回滚旧值
+            from .rule_flow import apply_rule_outcome
+            await apply_rule_outcome(conn, task, outcome or "approved")
+        elif biz_type == "INTEGRATION_FAIL" and outcome == "approved":
+            # 集成失败处理闭环：approve→生成重试运行并标记原批次 RETRYING
+            from .rule_flow import apply_integration_retry
+            await apply_integration_retry(conn, task)
+        elif biz_type == "HIER_RELATION" and result["status"] == "COMPLETED":
+            # 层级关系闭环：approve→关系生效；reject→关系作废
+            new_status = "Effective" if (outcome or "approved") == "approved" else "Rejected"
+            await conn.execute(
+                table("cmd_hierarchy_relation").update()
+                .where(table("cmd_hierarchy_relation").c.id == int(task["biz_id"]))
+                .values(status=new_status, approved_time=datetime.now()))
 
     result["task_status"] = status
     return result

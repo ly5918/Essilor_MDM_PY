@@ -1883,7 +1883,8 @@ export const getApprovalKpis = async (scope: 'bu' | 'gc'): Promise<ApprovalKpiVO
 export const getNavBadges = async (role: string): Promise<Record<string, number>> => {
   if (USE_MOCK) return delay(mock.mockNavBadges[role] ?? {});
   const data = await unwrap<Record<string, number>>(
-    request({ url: '/cmd/nav/badge', method: 'get', params: { role } })
+    // t 时间戳击穿缓存：该接口响应无 Cache-Control 头，浏览器会缓存旧响应导致角标永不更新
+    request({ url: '/cmd/nav/badge', method: 'get', params: { role, t: Date.now() } })
   );
   const badges: Record<string, number> = {};
   Object.entries(data ?? {}).forEach(([key, value]) => {

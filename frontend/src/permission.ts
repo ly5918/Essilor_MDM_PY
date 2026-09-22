@@ -13,7 +13,7 @@ import router from './router';
 const NProgress = ('default' in NProgressModule ? NProgressModule.default : NProgressModule) as typeof NProgressModule;
 
 NProgress.configure({ showSpinner: false });
-const whiteList = ['/login', '/register', '/social-callback', '/register*', '/register/*', '/cmd-poc*', '/cmd-poc/*'];
+const whiteList = ['/login', '/register', '/social-callback', '/register*', '/register/*', '/cmd-poc-py*', '/cmd-poc-py/*'];
 
 const isWhiteList = (path: string) => {
   return whiteList.some(pattern => isPathMatch(pattern, path));

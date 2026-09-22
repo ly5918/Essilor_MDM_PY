@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc
 
 from ..core.db import get_engine, table
 from ..services import sequence as seq
@@ -18,8 +18,18 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
     async with engine.begin() as conn:
         one_id = await seq.gen_one_id(conn)
         app_no = await seq.gen_app_no(conn)
-        dup = await duplicate_check(conn, payload.credit_code)
+        # 查重对齐 Java matchExisting：信用代码 → EXACT；名称（规范化相等或 Dice≥0.85）→ SUSPECTED；
+        # 同信用代码在途申请 → SUSPECTED（上一单未审完时不判 NEW）
+        dup = await duplicate_check(conn, payload.credit_code, payload.legal_name)
+        # 跨BU 判定对齐 Java：服务端比较命中主档 BU 与申请 BU（前端 crossBu 仅作覆盖）
         cross_bu = bool(payload.cross_bu)
+        if not cross_bu and dup["duplicate_flag"] == "Y" and dup["peers"]:
+            peer_bus = (await conn.execute(
+                select(table("cmd_customer").c.bu_scope).where(
+                    table("cmd_customer").c.one_id.in_([p["one_id"] for p in dup["peers"]])
+                ))).all()
+            cross_bu = any((r._mapping["bu_scope"] or "") != (payload.bu_scope or "")
+                           for r in peer_bus)
         risk = "High" if dup["duplicate_flag"] == "Y" else "Medium"
 
         # 命中存量时写入治理证据（含「候选One ID」键）——
@@ -93,11 +103,114 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             opinion=payload.remark if getattr(payload, "remark", None) else "",
         )
 
-    return {
-        "app_no": app_no, "one_id": one_id,
-        "match_state": dup["match_state"], "duplicate_flag": dup["duplicate_flag"],
-        "cross_bu": cross_bu, "peers": dup["peers"],
-    }
+        # 3.1) Duplicate Check 命中 → 生成疑似重复治理任务（对齐 Java createDuplicateTask：
+        #      同BU → SUSPECT；跨BU → CROSS_BU 升 GC）。Exact/Suspected 都由治理者决定关联或新建。
+        gov_task_code = None
+        if dup["duplicate_flag"] == "Y" and dup["peers"]:
+            gov_task_code = await seq.gen_code(conn, "GOV-", 4, "GOVERNANCE")
+            gid = await seq.next_id(conn, "cmd_governance_task")
+            await conn.execute(table("cmd_governance_task").insert().values(
+                id=gid, task_code=gov_task_code,
+                task_type="CROSS_BU" if cross_bu else "SUSPECT",
+                biz_type="CUSTOMER_CREATE", biz_id=app_no,
+                one_id=one_id, subject=payload.legal_name,
+                bu_scope=payload.bu_scope or "",
+                cross_bu_flag="Y" if cross_bu else "N",
+                risk_level="High" if cross_bu else "Medium",
+                match_state=dup["match_state"],
+                status="OPEN", evidence_json=evidence,
+                del_flag="0", create_by=0, create_time=datetime.now(),
+            ))
+
+        # 4) 回执：把 Duplicate Check 结论回流给提交人（对齐 Java fillDuplicateReceipt）。
+        #    此前只返回 app_no/one_id/match_state，前端《查重回执》的申请编号/当前节点/
+        #    匹配结论/命中记录全部是「—」，且疑似匹配只在审批端可见——提交人彻底盲了。
+        matched = dup["peers"][0] if dup["peers"] else None
+        match_state = dup["match_state"]
+        match_state_name = {"EXACT": "精准重复", "SUSPECTED": "疑似重复"}.get(match_state, "新客户")
+
+        # 同主体在途申请条数：按统一社会信用代码统计，含本次刚提交的这条
+        in_flight_count = 1
+        if payload.credit_code:
+            app_t = table("cmd_customer_application")
+            in_flight_count = (await conn.execute(
+                select(func.count()).select_from(app_t)
+                .where(app_t.c.credit_code == payload.credit_code)
+                .where(app_t.c.status.in_(["pending", "returned"]))
+                .where(app_t.c.del_flag == "0")
+            )).scalar() or 0
+
+        receipt = {
+            "customer_id": app_id,
+            "one_id": one_id,
+            "task_no": app_no,
+            "app_no": app_no,
+            "scene_code": "CUSTOMER_CREATE",
+            "status": "pending",
+            "task_status": "PENDING",
+            "current_node_code": "BU_REVIEW",
+            "current_node_name": "BU初审",
+            "assignee_role": "BU_STEWARD",
+            "risk_level": risk,
+            "match_state": match_state,
+            "match_state_name": match_state_name,
+            "duplicate_flag": dup["duplicate_flag"],
+            "cross_bu": cross_bu,
+            "in_flight_count": int(in_flight_count),
+        }
+
+        if matched is None:
+            receipt["matched_in_flight"] = False
+            receipt["duplicate_hint"] = (
+                f"未命中既有主档，但库中同一统一社会信用代码下另有 {in_flight_count - 1} 条尚未审批完成的申请，"
+                "请到「治理与审批」确认是否属于同一家客户。"
+                if in_flight_count > 1 else "未命中既有主档，按新客户进入审批。"
+            )
+        else:
+            receipt.update({
+                "matched_one_id": matched["one_id"],
+                "matched_name": matched.get("legal_name"),
+                "matched_credit_code": matched.get("credit_code"),
+                "matched_bu_scope": matched.get("bu_scope"),
+                "matched_status": matched.get("status"),
+                "matched_in_flight": bool(matched.get("in_flight")),
+            })
+            if matched.get("in_flight"):
+                # 在途候选：补对方申请编号与当前节点，提交人据此知道「该找谁、卡在哪个环节」
+                receipt["matched_task_no"] = matched.get("app_no")
+                task_t = table("cmd_approval_task")
+                peer_task = (await conn.execute(
+                    select(task_t.c.current_node_name, task_t.c.submit_time)
+                    .where(task_t.c.one_id == matched["one_id"])
+                    .where(task_t.c.status == "PENDING")
+                    .where(task_t.c.del_flag == "0")
+                    .order_by(desc(task_t.c.submit_time))
+                    .limit(1)
+                )).first()
+                if peer_task is not None:
+                    receipt["matched_node_name"] = peer_task._mapping["current_node_name"]
+                    st = peer_task._mapping["submit_time"]
+                    receipt["matched_submit_time"] = st.isoformat() if st else None
+            if matched.get("in_flight"):
+                hint = (f"系统判定为「{match_state_name}」：与 {matched['one_id']}"
+                        f"（{matched.get('legal_name') or ''}） 高度相似，且该记录仍是一条尚未审批完成的「在途申请」")
+                if receipt.get("matched_task_no"):
+                    hint += f"（申请编号 {receipt['matched_task_no']}"
+                    if receipt.get("matched_node_name"):
+                        hint += f"，当前节点 {receipt['matched_node_name']}"
+                    hint += "）"
+                hint += "。请到「治理与审批」跟踪两条待办，由 Data Steward 判定是否合并到同一 One ID——不要重复提交第三次。"
+            else:
+                hint = (f"系统判定为「{match_state_name}」：与 {matched['one_id']}"
+                        f"（{matched.get('legal_name') or ''}） 高度相似，该记录已是已发布主档。"
+                        f"批准后将按合并流程把本条关联到 {matched['one_id']}。")
+                if gov_task_code:
+                    hint += f" 已生成疑似重复治理任务 {gov_task_code}。"
+            receipt["duplicate_hint"] = hint
+
+        receipt["peers"] = dup["peers"]
+
+    return receipt
 
 
 async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> Optional[str]:
@@ -123,6 +236,20 @@ async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> O
         peers = await duplicate_check(conn, app_row["credit_code"])
         if peers["peers"]:
             merged_to = peers["peers"][0]["one_id"]
+
+    # 幂等守卫：one_id 已有主档（如重复审批/重放）不重复 INSERT——
+    # 否则撞唯一键直接 500（真实案例：升级误发布后 GC 再点「退回BU」报 Internal Server Error）
+    existing = (await conn.execute(
+        select(table("cmd_customer").c.id)
+        .where(table("cmd_customer").c.one_id == one_id)
+    )).first()
+    if existing is not None:
+        await conn.execute(
+            table("cmd_customer_application").update()
+            .where(table("cmd_customer_application").c.app_no == app_row["app_no"])
+            .values(status="approved", effective_from=datetime.now(), approved_time=datetime.now())
+        )
+        return one_id
 
     cust_id = await seq.next_id(conn, "cmd_customer")
     await conn.execute(table("cmd_customer").insert().values(

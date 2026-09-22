@@ -135,6 +135,9 @@ _*.json
 _*.txt
 _*.java
 _*.log
+_*.py
+_*.sql
+_*.html
 _probe_*
 _serve_*
 _uvicorn_*
@@ -146,6 +149,9 @@ _e2e_*.cjs
 _*_appl.json
 _walkthrough/
 walkthrough/
+
+# 手册源文件（23MB 截图，仅保留构建产物 HTML）
+manual-src/
 
 # 文档构建临时脚本（下划线前缀）
 frontend/docs/manual-kit/_*.py

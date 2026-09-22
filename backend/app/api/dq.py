@@ -34,10 +34,20 @@ async def dq_rule_create(body: dict = Body(...)):
     body.setdefault("rule_type", "CUSTOM")
     body.setdefault("check_type", "NOT_NULL")
     body.setdefault("model_code", "CUSTOMER")
+    body.setdefault("is_preset", "N")
+    body.setdefault("order_num", 0)
+    body.setdefault("version_no", "v1")
+    body.setdefault("status", "0")  # 草稿：DQ_RULE_CHANGE 审批通过后置 1
     body.setdefault("create_time", datetime.now())
     async with get_engine().begin() as conn:
         vals = await dynamic_insert(conn, table("dq_rule"), body)
-    return R.ok(vals, msg="DQ 规则已创建")
+        # 总设计泳道：规则草稿 → BU 验证 → GC 一致性验证 → 生效
+        from ..services.rule_flow import start_rule_change_flow
+        task_no = await start_rule_change_flow(
+            conn, "DQ_RULE_CHANGE", "dq_rule", int(vals.get("id") or 0),
+            {**body, "id": vals.get("id")}, "新增",
+            actor=str(body.get("create_by") or "demo"))
+    return R.ok({**vals, "taskNo": task_no}, msg="DQ 规则草稿已创建，审批通过后生效")
 
 
 @router.get("/rule/{rule_id}")
@@ -56,8 +66,20 @@ async def dq_rule_update(rule_id: int, body: dict = Body(...)):
     body = {k: v for k, v in dict(body).items() if k != "id"}
     body.setdefault("update_time", datetime.now())
     async with get_engine().begin() as conn:
-        await dynamic_update(conn, table("dq_rule"), rule_id, body)
-    return R.ok(msg="DQ 规则已更新")
+        old = (await conn.execute(
+            select(table("dq_rule")).where(table("dq_rule").c.id == rule_id))).mappings().first()
+        if old is None:
+            return R.fail("DQ 规则不存在", code=404)
+        old = dict(old)
+        # 修改落草稿（status=0），审批通过后恢复生效；拒绝则回滚旧值
+        new_vals = {**body, "status": "0"}
+        await dynamic_update(conn, table("dq_rule"), rule_id, new_vals)
+        from ..services.rule_flow import start_rule_change_flow
+        task_no = await start_rule_change_flow(
+            conn, "DQ_RULE_CHANGE", "dq_rule", rule_id,
+            {**{k: old.get(k) for k in ("rule_code", "rule_name", "version_no")},
+             **body}, "修改", actor="demo")
+    return R.ok({"taskNo": task_no}, msg="DQ 规则修改已提交审批，通过后生效")
 
 
 @router.delete("/rule/{rule_id}")

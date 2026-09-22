@@ -105,9 +105,16 @@
             </el-table-column>
             <el-table-column v-if="activeType === 'SUSPECTED'" label="治理操作" width="220" align="center" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="onLink(row)">关联已有</el-button>
-                <el-button link type="warning" @click="onReturn(row)">退回修复</el-button>
-                <el-button link type="danger" @click="onExclude(row)">排除</el-button>
+                <!-- 跨BU合并审批在途：显示标签而非按钮，防止重复发起（后端同样有守卫） -->
+                <el-tooltip v-if="row.handling && row.handling.includes('跨BU合并审批中')"
+                            :content="row.handling" placement="top">
+                  <el-tag type="warning" effect="plain" size="small">合并审批中</el-tag>
+                </el-tooltip>
+                <template v-else>
+                  <el-button link type="primary" @click="onLink(row)">关联已有</el-button>
+                  <el-button link type="warning" @click="onReturn(row)">退回修复</el-button>
+                  <el-button link type="danger" @click="onExclude(row)">排除</el-button>
+                </template>
               </template>
             </el-table-column>
             <template #empty>
