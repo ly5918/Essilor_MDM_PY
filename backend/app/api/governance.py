@@ -38,8 +38,20 @@ async def gov_stats():
 
 
 @router.post("/merge")
-async def launch_merge(payload: MergeLaunch):
-    """发起合并：创建治理任务 + MERGE 审批待办（流程首次审批时启动）。"""
+async def launch_merge(
+    sourceOneId: str = Query(default="", alias="sourceOneId"),
+    targetOneId: str = Query(default="", alias="targetOneId"),
+    reason: str = Query(default=None),
+    payload: MergeLaunch = None,
+):
+    """发起合并：创建治理任务 + MERGE 审批待办（流程首次审批时启动）。
+    兼容两种入参：前端 query 参数（sourceOneId/targetOneId）或 JSON body（MergeLaunch）。"""
+    survivor = (payload.survivor_one_id if payload and payload.survivor_one_id else sourceOneId) or ""
+    merged = (payload.merged_one_id if payload and payload.merged_one_id else targetOneId) or ""
+    if not survivor or not merged:
+        return R.fail("缺少合并参数（survivor/merged One ID）")
+    reason_txt = (payload.reason if payload else None) or reason
+    payload = MergeLaunch(survivor_one_id=survivor, merged_one_id=merged, reason=reason_txt)
     engine = get_engine()
     async with engine.begin() as conn:
         task_code = await seq.gen_code(conn, "GOV-", 4, "GOVERNANCE")

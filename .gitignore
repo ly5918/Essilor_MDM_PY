@@ -138,6 +138,8 @@ _*.log
 _*.py
 _*.sql
 _*.html
+_*.cmd
+_*.bat
 _probe_*
 _serve_*
 _uvicorn_*

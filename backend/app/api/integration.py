@@ -61,7 +61,7 @@ class EndpointPayload(BaseModel):
 async def create_endpoint(payload: EndpointPayload):
     d = payload.model_dump(exclude_none=True)
     d.setdefault("endpoint_code", f"EP-{uuid.uuid4().hex[:8].upper()}")
-    d.setdefault("status", "DRAFT")
+    d.setdefault("status", 0)  # int_endpoint.status 为 0/1 整型（0=Active），写字符串会导致 500
     async with get_engine().begin() as conn:
         vals = await dynamic_insert(conn, table("int_endpoint"), d)
     return R.ok({"id": vals.get("id"), "endpoint_code": vals.get("endpoint_code")}, msg="端点已创建")
@@ -77,7 +77,7 @@ async def update_endpoint(endpoint_id: int, payload: EndpointPayload):
 @router.post("/endpoint/{endpoint_id}/publish")
 async def publish_endpoint(endpoint_id: int):
     async with get_engine().begin() as conn:
-        await dynamic_update(conn, table("int_endpoint"), endpoint_id, {"status": "PUBLISHED"})
+        await dynamic_update(conn, table("int_endpoint"), endpoint_id, {"status": 1})  # 发布=置 1（原 "PUBLISHED" 字符串会让整型列报错 500）
     return R.ok(msg="端点已发布")
 
 
