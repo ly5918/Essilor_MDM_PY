@@ -1393,6 +1393,7 @@ export const buildMockSceneConfig = (sceneCode: string): FlowSceneConfigVO => {
     formKey: `${scene.sceneCode.toLowerCase().replace(/_/g, '-')}-form`,
     deployed: scene.deployed,
     version: scene.version,
+    deployedAt: '2026-09-18T10:47:55',
     timeoutAction: 'Notify + Escalate',
     notifyMode: 'Email Notification Only',
     notifyTargets: ['申请人', '当前节点办理人'],
@@ -1437,12 +1438,12 @@ export const mockReEvaluateImpact: ReEvaluateImpactVO[] = [
 /** ---------------------------------- 工作流（所有 CMD 流程） ---------------------------------- */
 /** 工作流：全部 CMD 业务场景（来自 V6.1 总设计业务流，已部署到 Warm-Flow） */
 export const mockFlowScenes: FlowSceneVO[] = [
-  { sceneCode: 'CUSTOMER_CREATE', sceneName: '客户创建', flowCode: 'cmd_customer_create', flowName: '客户创建审批流', slaHours: 48, deployed: true, definitionId: 1001, version: 1, nodeCount: 5 },
-  { sceneCode: 'CUSTOMER_CHANGE', sceneName: '客户属性变更', flowCode: 'cmd_customer_change', flowName: '客户变更审批流', slaHours: 48, deployed: true, definitionId: 1002, version: 1, nodeCount: 5 },
-  { sceneCode: 'DEACTIVATE', sceneName: '客户逻辑停用', flowCode: 'cmd_customer_deactivate', flowName: '客户停用审批流', slaHours: 72, deployed: true, definitionId: 1003, version: 1, nodeCount: 5 },
-  { sceneCode: 'HIER_RELATION', sceneName: '层级关系变更', flowCode: 'cmd_hier_relation', flowName: '层级关系审批流', slaHours: 48, deployed: true, definitionId: 1004, version: 1, nodeCount: 5 },
-  { sceneCode: 'IMPORT_BATCH', sceneName: '批量导入确认', flowCode: 'cmd_import_batch', flowName: '批量导入确认流', slaHours: 24, deployed: true, definitionId: 1005, version: 1, nodeCount: 5 },
-  { sceneCode: 'MERGE', sceneName: '客户合并', flowCode: 'cmd_customer_merge', flowName: '客户合并审批流', slaHours: 24, deployed: true, definitionId: 1006, version: 1, nodeCount: 5 }
+  { sceneCode: 'CUSTOMER_CREATE', sceneName: '客户创建', flowCode: 'cmd_customer_create', flowName: '客户创建审批流', slaHours: 48, deployed: true, definitionId: 1001, version: 'v1.0', nodeCount: 5 },
+  { sceneCode: 'CUSTOMER_CHANGE', sceneName: '客户属性变更', flowCode: 'cmd_customer_change', flowName: '客户变更审批流', slaHours: 48, deployed: true, definitionId: 1002, version: 'v1.0', nodeCount: 5 },
+  { sceneCode: 'DEACTIVATE', sceneName: '客户逻辑停用', flowCode: 'cmd_customer_deactivate', flowName: '客户停用审批流', slaHours: 72, deployed: true, definitionId: 1003, version: 'v1.0', nodeCount: 5 },
+  { sceneCode: 'HIER_RELATION', sceneName: '层级关系变更', flowCode: 'cmd_hier_relation', flowName: '层级关系审批流', slaHours: 48, deployed: true, definitionId: 1004, version: 'v1.0', nodeCount: 5 },
+  { sceneCode: 'IMPORT_BATCH', sceneName: '批量导入确认', flowCode: 'cmd_import_batch', flowName: '批量导入确认流', slaHours: 24, deployed: true, definitionId: 1005, version: 'v1.0', nodeCount: 5 },
+  { sceneCode: 'MERGE', sceneName: '客户合并', flowCode: 'cmd_customer_merge', flowName: '客户合并审批流', slaHours: 24, deployed: true, definitionId: 1006, version: 'v1.0', nodeCount: 5 }
 ];
 
 /** 工作流：按场景构造演示用 BPMN 风格图形（节点均为待执行，定义视图） */

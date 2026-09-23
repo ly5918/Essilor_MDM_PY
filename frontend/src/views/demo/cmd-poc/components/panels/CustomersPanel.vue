@@ -290,10 +290,21 @@
           </template>
         </el-table-column>
 
-        <!-- 申请未发布成主档，没有「客户详情」可看；主操作直接落到流程跟踪 -->
-        <el-table-column label="操作" width="88" fixed="right" align="center">
+        <!-- 申请未发布成主档，没有「客户详情」可看；主操作落到流程跟踪，被退回行加「修改重报」 -->
+        <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
             <el-button link type="primary" @click="onViewFlow(row)">查看流程</el-button>
+            <el-tooltip
+              content="本申请已被退回，修改后重新提交，再次进入 BU Scope 初审"
+              placement="top"
+            >
+              <el-button
+                v-if="row.status === 'returned'"
+                link
+                type="warning"
+                @click="onOpenResubmit(row)"
+              >修改重报</el-button>
+            </el-tooltip>
           </template>
         </el-table-column>
 
@@ -318,12 +329,69 @@
         />
       </div>
     </el-card>
+
+    <!-- ============ 修改重报弹窗（两级审批闭环：BU 初审退回 → 申请人修改 → 重进 BU 初审） ============ -->
+    <el-dialog
+      v-model="resubmitVisible"
+      title="修改重报"
+      width="560px"
+      append-to-body
+      destroy-on-close
+      class="resubmit-dialog"
+    >
+      <el-alert
+        type="warning"
+        :closable="false"
+        class="rs-tip"
+        title="本申请已被 BU Scope 退回。修改后重新提交：重新执行查重与 DQ 评分，并再次进入 BU Scope 初审。"
+        show-icon
+      />
+      <el-form :model="resubmitForm" label-width="118px">
+        <el-form-item label="申请编号">
+          <span class="cust-mono">{{ resubmitForm.appNo }}</span>
+        </el-form-item>
+        <el-form-item label="客户法定名称" required>
+          <el-input v-model="resubmitForm.legalName" maxlength="200" placeholder="客户法定名称（必填）" />
+        </el-form-item>
+        <el-form-item label="统一社会信用代码">
+          <el-input v-model="resubmitForm.creditCode" maxlength="32" placeholder="18 位统一社会信用代码" />
+        </el-form-item>
+        <el-form-item label="注册地址">
+          <el-input v-model="resubmitForm.address" maxlength="200" placeholder="注册 / 经营地址（查重主依据之一）" />
+        </el-form-item>
+        <el-form-item label="联系人">
+          <el-input v-model="resubmitForm.contactName" maxlength="50" />
+        </el-form-item>
+        <el-form-item label="联系电话">
+          <el-input v-model="resubmitForm.contactPhone" maxlength="30" />
+        </el-form-item>
+        <el-form-item label="修改说明">
+          <el-input
+            v-model="resubmitForm.remark"
+            type="textarea"
+            :rows="2"
+            maxlength="200"
+            show-word-limit
+            placeholder="填写本次修改要点，将记入流程轨迹"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resubmitVisible = false">取消</el-button>
+        <el-button type="primary" :loading="resubmitting" @click="onResubmit">确认重报</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { listCustomerApplications, listCustomers } from '@/api/demo/cmdPoc';
+import { ElMessage } from 'element-plus';
+import {
+  listCustomerApplications,
+  listCustomers,
+  resubmitCustomerApplication
+} from '@/api/demo/cmdPoc';
 import type {
   CustomerApplicationQuery,
   CustomerApplicationVO,
@@ -610,6 +678,61 @@ const onViewFlow = (row: unknown) => {
   });
 };
 
+/* ---------- 修改重报（两级审批闭环：BU 初审退回 → 申请人修改 → 重进 BU 初审） ---------- */
+
+const resubmitVisible = ref(false);
+const resubmitting = ref(false);
+const resubmitForm = ref({
+  appNo: '',
+  legalName: '',
+  creditCode: '',
+  address: '',
+  contactName: '',
+  contactPhone: '',
+  remark: ''
+});
+
+/** 打开重报弹窗：用申请单当前值预填（只有被退回的行才显示入口） */
+const onOpenResubmit = (row: unknown) => {
+  const app = row as CustomerApplicationVO;
+  resubmitForm.value = {
+    appNo: app.appNo,
+    legalName: app.legalName || '',
+    creditCode: app.creditCode || '',
+    address: app.address || '',
+    contactName: app.contactName || '',
+    contactPhone: app.contactPhone || '',
+    remark: ''
+  };
+  resubmitVisible.value = true;
+};
+
+/** 确认重报：后端重跑查重 / DQ，并把任务与流程实例拉回 BU Scope 初审 */
+const onResubmit = async () => {
+  if (!resubmitForm.value.legalName.trim()) {
+    ElMessage.warning('客户法定名称不能为空');
+    return;
+  }
+  resubmitting.value = true;
+  try {
+    const msg = await resubmitCustomerApplication(resubmitForm.value.appNo, {
+      legalName: resubmitForm.value.legalName.trim(),
+      creditCode: resubmitForm.value.creditCode.trim(),
+      address: resubmitForm.value.address.trim(),
+      contactName: resubmitForm.value.contactName.trim(),
+      contactPhone: resubmitForm.value.contactPhone.trim(),
+      remark: resubmitForm.value.remark.trim()
+    });
+    ElMessage.success(msg);
+    resubmitVisible.value = false;
+    await doQuery();
+  } catch (error) {
+    ElMessage.error(describeError(error, '修改重报'));
+  } finally {
+    resubmitting.value = false;
+  }
+};
+
 onMounted(async () => {
   await doQuery();
   // 层级归属列的数据来源：层级树（已归位）+ 待归位主数据
@@ -638,6 +761,11 @@ onUnmounted(() => {
   color: var(--g-text2);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 修改重报弹窗：警示条与表单留出间距 */
+.rs-tip {
+  margin-bottom: 16px;
 }
 
 /* 权限与查询说明：压成一行 12px 小字，避免整条彩色 alert 占据一个视觉带 */

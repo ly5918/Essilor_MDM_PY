@@ -8,7 +8,7 @@ from sqlalchemy import select, func, desc
 
 from ..core.db import get_engine, table
 from ..core.query import list_table
-from ..schemas import R, CustomerSubmit
+from ..schemas import R, CustomerSubmit, CustomerResubmit
 from ..services import customer as svc
 
 router = APIRouter(prefix="/cmd/customer", tags=["客户主档"])
@@ -73,6 +73,16 @@ async def create_customer(payload: CustomerSubmit):
     except ValueError as e:
         return R.fail(str(e), code=400)
     return R.ok(result, msg="提交成功，已启动审批流程")
+
+
+@router.put("/application/{app_no}/resubmit")
+async def resubmit_application(app_no: str, payload: CustomerResubmit):
+    """被退回申请「修改重报」：仅 returned 可重报；重跑查重/DQ，任务与实例拉回 BU 初审。"""
+    try:
+        result = await svc.resubmit_application(app_no, payload)
+    except ValueError as e:
+        return R.fail(str(e), code=400)
+    return R.ok(result, msg="修改重报成功，已重新进入 BU Scope 初审")
 
 
 @router.get("/oneId/{one_id}")

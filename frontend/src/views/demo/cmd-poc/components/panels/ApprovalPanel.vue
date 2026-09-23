@@ -298,13 +298,29 @@
           <template #footer>
             <div v-if="detail" class="ap-dlg-foot">
               <template v-if="hasActions">
+                <!--
+                  审批意见为**必填**：未填写时下方全部审批动作按钮置灰不可点。
+                  审批动作会写审批轨迹并推进流程，意见是后续追溯/审计的唯一人工说明，
+                  留空则轨迹里只剩「谁点了什么」，无法还原判断依据。
+                -->
+                <div class="ap-foot-comment-head">
+                  <span class="ap-foot-comment-label">
+                    审批意见<span class="ap-req">*</span>
+                  </span>
+                  <span class="ap-foot-comment-hint" :class="{ 'is-ok': canSubmitAction }">
+                    {{ canSubmitAction ? '已填写，可选择下方审批动作' : '必填：填写后才能执行审批动作' }}
+                  </span>
+                </div>
                 <el-input
+                  ref="commentRef"
                   v-model="comment"
                   class="ap-foot-comment"
                   type="textarea"
                   :rows="2"
+                  :maxlength="500"
+                  show-word-limit
                   resize="none"
-                  placeholder="请输入审批意见（可选，将写入审批轨迹）"
+                  placeholder="请输入审批意见（必填，将写入审批轨迹）"
                 />
                 <div class="ap-actions">
                   <el-button
@@ -312,6 +328,7 @@
                     :key="act.key"
                     :type="act.type"
                     :loading="submitting"
+                    :disabled="submitting || !canSubmitAction"
                     @click="onAction(act)"
                   >
                     {{ act.label }}
@@ -441,6 +458,8 @@ const detail = ref<ApprovalTaskDetailVO | null>(null);
 /** 队列请求失败原因：非空时显性提示并可重试，避免 502 被读成「没有待办」（复测报告 BUG-01 观感来源） */
 const loadError = ref('');
 const comment = ref('');
+/** 审批意见输入框实例：未填写却触发动作时把焦点自动拉回输入框 */
+const commentRef = ref<{ focus?: () => void } | null>(null);
 const submitting = ref(false);
 const pageNum = ref(1);
 const pageSize = ref(10);
@@ -488,6 +507,14 @@ const canMerge = computed(() => {
  * 有动作 → 审批意见 + 动作按钮；无动作 → 状态说明，而不是一个空白区域。
  */
 const hasActions = computed(() => (detail.value?.actions?.length ?? 0) > 0);
+
+/**
+ * 审批意见是否已填写（去空白）——审批动作的前置条件。
+ *
+ * 动作按钮的 `disabled` 与 `onAction` 的守卫共用这一个口径，避免「按钮可点但提交被拦」
+ * 这类前端自相矛盾的状态。纯空白字符不算填写。
+ */
+const canSubmitAction = computed(() => comment.value.trim().length > 0);
 /** 从审批详情直接打开合并申请弹窗（当前任务客户为合并源） */
 const onLaunchMerge = () => {
   if (detail.value?.oneId) openDialog('merge', { oneId: detail.value.oneId, name: detail.value.name });
@@ -718,9 +745,22 @@ const buildConfirm = (act: { key: string; label: string }) => {
         type: 'warning' as const
       };
     case 'RETURN':
+      // 两级人工审批各退一级（总设计故事一：创建 → BU Scope 初审 → GC Scope 决策）：
+      // GC 决策退回 → 只退到 BU Scope 初审补证据；BU 初审退回 → 回申请人改稿重报。
+      // 文案必须与后端退回目标节点一致，否则页面说「退回申请人」而流程停在
+      // BU Scope 初审（或反之），是最难排查的一类口径漂移。
+      if (scope.value === 'gc') {
+        return {
+          title: '确认退回？',
+          html: `将把 ${target} 退回 <b>BU Scope 初审</b>补充证据：本单<b>不会</b>直接打回申请人，`
+            + `由 BU Steward 补齐材料后重新提交或再升级，届时再回到 GC 决策。`,
+          type: 'warning' as const
+        };
+      }
       return {
         title: '确认退回？',
-        html: `将把 ${target} 退回申请人<b>补充材料</b>：流程挂起，待申请人重新提交后再次进入审批。`,
+        html: `将把 ${target} 退回<b>申请人（创建客户申请）</b>修改重报：流程挂起在「创建客户申请」，`
+          + `申请人改稿重新提交后再次进入 BU Scope 初审。`,
         type: 'warning' as const
       };
     case 'ESCALATE':
@@ -768,9 +808,18 @@ const confirmTextOf = (label: string) => (label.startsWith('确认') ? label : `
 /**
  * 提交动作：先弹确认，用户确认后才真正调用后端。
  * 取消 / 关闭确认框一律视为放弃，不提交、不报错。
+ *
+ * 前置条件：审批意见必填。按钮已按 `canSubmitAction` 置灰，这里再做一道守卫，
+ * 防止键盘回车 / 程序化触发绕过禁用态，并顺带把焦点拉回输入框引导补填。
  */
 const onAction = async (act: { key: string; label: string; type?: string }) => {
   if (!detail.value) return;
+  const opinion = comment.value.trim();
+  if (!opinion) {
+    ElMessage.warning('请先填写审批意见，再执行审批动作');
+    commentRef.value?.focus?.();
+    return;
+  }
   const ask = buildConfirm(act);
   try {
     await ElMessageBox.confirm(ask.html, ask.title, {
@@ -788,9 +837,9 @@ const onAction = async (act: { key: string; label: string; type?: string }) => {
     await submitApprovalAction({
       taskId: detail.value.id,
       actionType: act.key,
-      opinion: comment.value
+      opinion
     });
-    ElMessage.success(`已执行「${act.label}」${comment.value ? `，意见：${comment.value}` : ''}`);
+    ElMessage.success(`已执行「${act.label}」，意见：${opinion}`);
     comment.value = '';
     detail.value = null;
     detailOpen.value = false;

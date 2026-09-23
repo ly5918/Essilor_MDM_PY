@@ -1114,6 +1114,38 @@
     gap: 8px;
     text-align: left;
 
+    /*
+     * 审批意见必填标识行：左「审批意见 *」右「状态提示」。
+     * 动作按钮在未填写时整体置灰，这行提示解释「为什么按钮点不动」，
+     * 否则用户只会看到一个灰按钮而不知道缺什么。
+     */
+    .ap-foot-comment-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .ap-foot-comment-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--g-text);
+
+      .ap-req {
+        color: var(--el-color-danger);
+        font-style: normal;
+        margin-left: 2px;
+      }
+    }
+    .ap-foot-comment-hint {
+      font-size: 12px;
+      color: var(--el-color-warning);
+
+      &.is-ok {
+        color: var(--el-color-success);
+      }
+    }
+
     /* 审批意见输入框：整宽铺开（列方向默认 stretch，这里显式写清避免被外层 text-align 影响） */
     .ap-foot-comment {
       width: 100%;

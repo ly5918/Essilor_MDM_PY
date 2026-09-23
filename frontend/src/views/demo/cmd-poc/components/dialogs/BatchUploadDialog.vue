@@ -27,13 +27,17 @@
         <el-col :span="12">
           <el-form-item label="导入模板" prop="templateCode">
             <el-select v-model="form.templateCode" style="width: 100%" @change="onTemplateChange"
-                       :placeholder="templates.length ? '请选择导入模板' : '暂无可用模板'">
-              <el-option v-for="item in templates" :key="item.templateCode" :label="templateLabel(item)" :value="item.templateCode" />
+                       :placeholder="matchingTemplates.length ? '请选择导入模板' : '暂无匹配的模板'">
+              <el-option v-for="item in matchingTemplates" :key="item.templateCode" :label="templateLabel(item)" :value="item.templateCode" />
               <template #empty>
                 <div class="tpl-empty">
                   {{ templateLoadFailed
                     ? '模板加载失败：请关闭弹窗后重新打开重试'
-                    : '暂无已发布模板：请先在「平台管理 › 导入模板」发布模板' }}
+                    : !publishedTemplates.length
+                      ? (draftCount
+                        ? `暂无已发布模板：有 ${draftCount} 个草稿模板尚未发布，请管理员先在「平台管理 › 导入模板管理」发布后再提交`
+                        : '暂无已发布模板：请先在「平台管理 › 导入模板管理」新建模板、配置字段映射后发布')
+                      : `暂无与当前业务上下文（${form.scene} / ${form.buScope || '未选BU'} / ${form.sourceSystem || '未选来源'}）匹配的已发布模板：请调整业务上下文，或让管理员发布对应上下文的模板` }}
                 </div>
               </template>
             </el-select>
@@ -43,6 +47,7 @@
       <div v-if="currentTemplate" class="tpl-hint">
         模板版本：{{ currentTemplate.version }} · 字段数 {{ currentTemplate.fieldCount }} ·
         业务上下文：{{ templateContext(currentTemplate) }}
+        <span class="tpl-only-published">仅显示与业务上下文匹配的已发布模板</span>
       </div>
 
       <!-- 模板表头要求（设计节点②「上传 Excel / CSV」：提交前确认文件与模板匹配） -->
@@ -88,7 +93,7 @@
 import { UploadFilled } from '@element-plus/icons-vue';
 import type { FormInstance, UploadFile } from 'element-plus';
 import { ElMessage } from 'element-plus';
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { listImportTemplates, listTemplateMappings, uploadImportJob } from '@/api/demo/cmdPoc';
 import type { ImportTemplateVO, TemplateMappingVO } from '@/api/demo/cmdPoc/types';
 
@@ -101,6 +106,7 @@ const BU_OPTIONS = ['High End', 'Mainstream'];
 const SOURCE_SYSTEM_OPTIONS = ['DMS+', 'Cloud', 'SAP', 'EXCEL', 'Manual'];
 
 const formRef = ref<FormInstance>();
+/** 模板全量（含草稿）：下拉只列已发布，草稿仅用于空态提示「有几个草稿待发布」 */
 const templates = ref<ImportTemplateVO[]>([]);
 /** 模板接口是否加载失败（用于区分「未配置模板」与「加载失败」，给出不同引导） */
 const templateLoadFailed = ref(false);
@@ -112,6 +118,34 @@ const form = reactive({
   buScope: '',
   sourceSystem: '',
   templateCode: ''
+});
+
+/**
+ * 业务侧只能选用已发布模板（总设计 §02 Configuration-first：模板是版本化配置，
+ * 须 Admin 发布后才生效；§05 泳道里「模板与规则配置」是 Admin 旁路）。
+ * 草稿模板的字段映射可能仍在调整，选它会造成上传文件按错列解析。
+ */
+const publishedTemplates = computed(() => templates.value.filter(item => item.status === 'Published'));
+const draftCount = computed(() => templates.value.length - publishedTemplates.value.length);
+
+/**
+ * 模板与业务上下文对应（总设计 §15：模板按业务上下文定位）——
+ * 只列出「业务场景 / BU / 来源系统」与当前表单选择一致的已发布模板，
+ * 避免出现 DOOR/Mainstream 任务里可选到别的上下文模板（文件列结构错配）。
+ * 模板上下文不完整的（历史遗留）不会命中任何组合，等价于被排除；
+ * Admin 侧需先在「导入模板管理」补全上下文并重新发布。
+ */
+const matchingTemplates = computed(() => publishedTemplates.value.filter(item =>
+  (!!item.context && item.context === form.scene)
+  && (!form.buScope || item.bu === form.buScope)
+  && (!form.sourceSystem || item.sourceSystem === form.sourceSystem)));
+
+/** 上下文变化后当前模板不再匹配 → 清空选择，让用户在对应列表里重选 */
+watch(() => [form.scene, form.buScope, form.sourceSystem], async () => {
+  if (form.templateCode && !matchingTemplates.value.some(item => item.templateCode === form.templateCode)) {
+    form.templateCode = '';
+    mappings.value = [];
+  }
 });
 
 const currentTemplate = computed(() => templates.value.find(item => item.templateCode === form.templateCode));
@@ -154,10 +188,10 @@ const submit = async (): Promise<string> => {
     throw new Error('请选择 BU');
   }
   if (!form.templateCode) {
-    // 区分「没选」与「根本没模板」：后者是配置问题（设计 §15 需 Admin 发布模板），不能只提示「请选择」
-    throw new Error(templates.value.length
+    // 区分「没选」与「没有匹配模板」：后者是配置问题（设计 §15 需 Admin 发布对应上下文的模板），不能只提示「请选择」
+    throw new Error(matchingTemplates.value.length
       ? '请选择导入模板'
-      : '暂无可用导入模板：请先到「平台管理 › 导入Template」新建模板、配置字段映射后发布，再提交');
+      : `暂无与业务上下文（${form.scene} / ${form.buScope || '未选BU'} / ${form.sourceSystem || '未选来源'}）匹配的已发布模板：请到「平台管理 › 导入模板管理」检查模板上下文并发布，再提交`);
   }
   if (!file.value) {
     throw new Error('请选择要上传的文件');
@@ -185,10 +219,10 @@ onMounted(async () => {
     templates.value = [];
     templateLoadFailed.value = true;
   }
-  // 默认选中第一个已发布模板，没有则取第一个；业务上下文随之回落模板定义
-  const published = templates.value.find(item => item.status === 'Published') ?? templates.value[0];
-  if (published) {
-    form.templateCode = published.templateCode;
+  // 默认选中第一个与业务上下文匹配的已发布模板；选中后 onTemplateChange 会把 BU/来源系统回落为模板定义
+  const matched = matchingTemplates.value[0];
+  if (matched) {
+    form.templateCode = matched.templateCode;
     onTemplateChange();
   }
 });
@@ -226,6 +260,17 @@ defineExpose({ submit });
   margin: 0 0 8px 130px;
   font-size: 12px;
   color: var(--g-text2);
+}
+
+/* 「仅可选已发布模板」小标：说明草稿不出现在此下拉的原因 */
+.tpl-only-published {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--g-brand, #0a58ca);
+  background: color-mix(in srgb, var(--g-brand, #0a58ca) 10%, transparent);
 }
 
 /* 模板下拉空态引导（未配置模板 / 加载失败两种文案） */

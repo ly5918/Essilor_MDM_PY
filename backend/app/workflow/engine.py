@@ -156,7 +156,7 @@ async def get_tasks(biz_no: str) -> List[Dict[str, Any]]:
 async def complete_current(biz_no: str, action: str, actor: str,
                            opinion: str = "", variables: Optional[Dict[str, Any]] = None
                            ) -> Dict[str, Any]:
-    """完成当前等待节点并推进。action ∈ approve/reject/escalate。"""
+    """完成当前等待节点并推进。action ∈ approve/reject/escalate/return。"""
     wf = await _load(biz_no)
     if wf is None:
         raise RuntimeError(f"流程实例不存在: {biz_no}")
@@ -193,3 +193,54 @@ async def complete_current(biz_no: str, action: str, actor: str,
                    wf, status, node, dict(wf.data))
     return {"biz_no": biz_no, "status": status, "current_node": node,
             "role": role, "outcome": outcome, "data": dict(wf.data)}
+
+
+_SPEC_OF_NODE = {v: k for k, v in NODE_CODE.items()}   # APPLY -> Activity_Apply
+
+
+async def reset_instance_node(biz_no: str, node_code: str) -> None:
+    """把流程实例**真正**回退到指定节点：重建工作流并快进到目标节点的 READY 等待位。
+
+    `cmd_approval.bpmn` 里没有 return 分支：退回动作会让引擎按默认流走到
+    EndEvent_Approve、实例被判 COMPLETED。旧实现只把镜像行改成「RUNNING /
+    目标节点」、不动序列化的 workflow 状态——引擎实际仍停在 EndEvent，
+    后续任何动作（批准/拒绝/升级）都会命中 complete_current 的
+    「无待办节点 → COMPLETED(outcome=approved)」兜底分支：升级被当成批准、
+    拒绝也被当成批准，甚至误发布主档（实测 AP-0003 升级即发布）。
+
+    这里用「重建 + 快进」让引擎与任务行口径一致：
+    - APPLY：重建后停在 Activity_Apply 等待（申请人修改重报的挂起点）；
+    - BU_REVIEW / GC_REVIEW：依次完成上游人工节点（升级目标补 crossBu=True），
+      停在对应节点的 READY 位。流程变量（taskNo/buScope/…）从旧实例整体继承。
+    之后的审批动作走 complete_current 的正常推进逻辑，不再依赖兜底分支。
+    """
+    old = await _load(biz_no)
+    data = dict(old.data) if old is not None else {}
+    data.pop("action", None)
+    data["rejected"] = False
+    wf = BpmnWorkflow(_get_spec())
+    for t in wf.get_tasks():
+        if t.task_spec.__class__.__name__ in ("StartEvent", "BpmnStartTask"):
+            t.data.update(data)
+    wf.do_engine_steps()
+
+    target_spec = _SPEC_OF_NODE.get(node_code)
+    ready = _ready_user_tasks(wf)
+    # 快进 APPLY → BU_REVIEW
+    if ready and ready[0].task_spec.name == "Activity_Apply" and target_spec != "Activity_Apply":
+        ready[0].data.update(data)
+        ready[0].complete()
+        wf.do_engine_steps()
+        ready = _ready_user_tasks(wf)
+    # 快进 BU_REVIEW → GC_REVIEW（升级路径：网关条件需要 crossBu=True）
+    if ready and ready[0].task_spec.name == "Activity_BUReview" and target_spec == "Activity_GCReview":
+        ready[0].data.update(data)
+        ready[0].data["crossBu"] = True
+        ready[0].complete()
+        wf.do_engine_steps()
+        ready = _ready_user_tasks(wf)
+
+    spec, node, role = _current_node_info(wf)
+    status = "COMPLETED" if wf.is_completed() else "RUNNING"
+    await _persist(biz_no, data.get("sceneCode", ""), data.get("bizType", ""),
+                   wf, status, node, dict(wf.data))

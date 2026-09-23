@@ -49,6 +49,25 @@ class CustomerSubmit(BaseModel):
     applicant_id: Optional[int] = None
 
 
+class CustomerResubmit(BaseModel):
+    """被退回申请的「修改重报」入参：全部字段可选，仅更新前端传入的非空项。
+
+    业务口径（总设计两级审批）：BU Scope 初审退回 → 申请人（Business User）
+    在「创建客户申请」修改后重报 → 再次进入 BU Scope 初审。重报时后端会
+    用合并后的关键字段重新查重 / 重打 DQ 分，并同步重开审批任务与流程实例。
+    """
+    legal_name: Optional[str] = None
+    legal_name_en: Optional[str] = None
+    credit_code: Optional[str] = None
+    short_name: Optional[str] = None
+    address: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    remark: Optional[str] = None
+    applicant_name: Optional[str] = None
+
+
 class ApprovalAction(BaseModel):
     """审批动作入参：兼容前端 camelCase（taskId/actionType）与后端 snake_case。
 

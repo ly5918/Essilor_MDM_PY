@@ -453,6 +453,12 @@ export interface CustomerApplicationVO {
   dupInFlightCount?: number;
   /** 重复核验：同主体其它记录摘要（tooltip） */
   dupPeerSummary?: string;
+  /** 注册地址（修改重报弹窗预填） */
+  address?: string;
+  /** 联系人（修改重报弹窗预填） */
+  contactName?: string;
+  /** 联系电话（修改重报弹窗预填） */
+  contactPhone?: string;
 }
 
 export interface CustomerApplicationQuery extends PageQuery {
@@ -2124,7 +2130,10 @@ export interface FlowSceneConfigVO {
   /** 审批表单标识 */
   formKey?: string;
   deployed?: boolean;
-  version?: number;
+  /** 当前部署版本号（'v1.0' 字符串，展示层直接渲染、不得再拼 v 前缀） */
+  version?: string;
+  /** 部署时间（版本历史展示用） */
+  deployedAt?: string;
   /** 超时动作 */
   timeoutAction?: string;
   /** 通知方式 */

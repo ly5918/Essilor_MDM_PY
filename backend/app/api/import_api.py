@@ -133,11 +133,15 @@ async def job_create(body: dict = Body(...)):
 
 
 @router.get("/template/list")
-async def template_list():
-    """模板清单（Published/Draft + 字段数，前端下载模板弹窗数据源）。"""
+async def template_list(status: Optional[str] = Query(None)):
+    """模板清单（Published/Draft + 字段数，前端下载模板弹窗数据源）。
+
+    status=Published 只回已发布模板：业务侧（新建导入任务 / 下载模板）只能选已发布版本；
+    平台管理的模板管理不传该参数，取全量以便编辑草稿。
+    """
     conn = await get_engine().connect()
     try:
-        rows = await import_service.list_templates(conn)
+        rows = await import_service.list_templates(conn, status)
     finally:
         await conn.close()
     return R.ok(rows)
@@ -260,6 +264,6 @@ compat_router = APIRouter(prefix="/cmd", tags=["导入"], include_in_schema=Fals
 
 
 @compat_router.get("/template/list")
-async def template_list_compat():
-    """兼容别名：等价于 GET /cmd/import/template/list。"""
-    return await template_list()
+async def template_list_compat(status: Optional[str] = Query(None)):
+    """兼容别名：等价于 GET /cmd/import/template/list（同样支持 status 过滤）。"""
+    return await template_list(status)

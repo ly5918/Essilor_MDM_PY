@@ -185,27 +185,42 @@ BUILTIN_TEMPLATES: List[dict] = [
 ]
 
 
-async def list_templates(conn) -> List[dict]:
+async def list_templates(conn, status: Optional[str] = None) -> List[dict]:
     """模板清单（status 0→Published / 其余→Draft，含字段数）。
+
+    status 传 "Published" 时只返回已发布模板：业务侧的「新建导入任务」与「下载模板」
+    只能选已发布版本。依据总设计 §02 Configuration-first（元数据 / 规则 / 流程 / 权限
+    均版本化配置）与 §05 泳道（「模板与规则配置」是 Admin 侧旁路配置，业务节点只
+    「选择…模板版本」）——草稿模板的字段映射仍在调整，不能作为生产导入依据。
+    平台管理里的「导入模板管理」不传 status，仍可取全量以便编辑草稿。
 
     表为空时回退到内置模板集（BUG-PY-01）：下拉不可为空，否则必填项无从选择、
     批量导入整条链路不可用。DB 有数据时以 DB 为准，不覆盖平台配置。
     """
     rows = await import_repo.list_templates(conn)
     if not rows:
-        return [dict(t) for t in BUILTIN_TEMPLATES]
-    out = []
-    for tpl in rows:
-        field_count = await import_repo.count_mappings(conn, tpl["template_code"])
-        out.append({
-            "id": tpl["id"], "templateCode": tpl["template_code"],
-            "templateName": tpl["template_name"], "scene": tpl.get("scene"),
-            "buScope": tpl.get("bu_scope"), "customerType": tpl.get("customer_type"),
-            "productLine": tpl.get("product_line"), "sourceSystem": tpl.get("source_system"),
-            "versionNo": tpl.get("version_no"),
-            "status": "Published" if tpl.get("status") == "0" else "Draft",
-            "fieldCount": field_count, "remark": tpl.get("remark"),
-        })
+        # 内置模板的 status 存的是编码（0/1），这里统一归一为 Published/Draft，
+        # 否则前端按 'Published' 判断时会把它误判成草稿、并让「只看已发布」过滤全部落空。
+        out = []
+        for t in BUILTIN_TEMPLATES:
+            item = dict(t)
+            item["status"] = "Published" if item.get("status") == "0" else "Draft"
+            out.append(item)
+    else:
+        out = []
+        for tpl in rows:
+            field_count = await import_repo.count_mappings(conn, tpl["template_code"])
+            out.append({
+                "id": tpl["id"], "templateCode": tpl["template_code"],
+                "templateName": tpl["template_name"], "scene": tpl.get("scene"),
+                "buScope": tpl.get("bu_scope"), "customerType": tpl.get("customer_type"),
+                "productLine": tpl.get("product_line"), "sourceSystem": tpl.get("source_system"),
+                "versionNo": tpl.get("version_no"),
+                "status": "Published" if tpl.get("status") == "0" else "Draft",
+                "fieldCount": field_count, "remark": tpl.get("remark"),
+            })
+    if status in ("Published", "Draft"):
+        out = [x for x in out if x.get("status") == status]
     return out
 
 
@@ -340,9 +355,11 @@ async def save_template(conn, body: dict) -> str:
 async def set_template_status(conn, template_code: str, status: str) -> str:
     """发布 / 停用导入模板。
 
-    发布前必须已配置字段映射，且包含主键字段（客户法定名称 legal_name /
-    统一社会信用代码 credit_code）——它们是上传预检与存量查重的锚点，
-    缺失会导致批量导入无法正确分流。
+    发布前必须：①已配置字段映射且包含主键字段（客户法定名称 legal_name /
+    统一社会信用代码 credit_code）——它们是上传预检与存量查重的锚点；
+    ②业务上下文（场景 / BU / 客户类型 / 产品线 / 来源系统）完整——模板按业务
+    上下文定位，发布后只能在「新建导入任务」里被对应上下文选中，缺维度的
+    模板无法与任何任务上下文对应。
     """
     code = (template_code or "").strip()
     if status not in TEMPLATE_STATUS_CODE:
@@ -352,6 +369,16 @@ async def set_template_status(conn, template_code: str, status: str) -> str:
         raise ImportBizError(f"导入模板不存在：{code}")
 
     if status == "Published":
+        # ① 业务上下文完整性：模板按业务上下文与「新建导入任务」对应（§15 模板定位维度）
+        missing_ctx = [label for label, key in (
+            ("业务场景", "scene"), ("归属 BU", "bu_scope"), ("客户类型", "customer_type"),
+            ("产品线", "product_line"), ("来源系统", "source_system")) if not (template.get(key) or "").strip()]
+        if missing_ctx:
+            raise ImportBizError(
+                f"模板业务上下文不完整（缺：{'、'.join(missing_ctx)}），无法发布。"
+                "请点「编辑模板」补全业务上下文——发布后模板将只在对应业务上下文的"
+                "「新建导入任务」中出现，缺维度会导致任务无法选中模板。")
+        # ② 字段映射与主键校验
         mappings = await import_repo.list_mappings(conn, code)
         if not mappings:
             raise ImportBizError("模板未配置字段映射，无法发布")
@@ -394,6 +421,13 @@ async def save_mapping(conn, body: dict) -> str:
     mapping_id = body.get("id") or body.get("mappingId")
     if not template_code or not column_name or not field_code:
         raise ImportBizError("模板编码、源列与目标字段编码不能为空")
+    # 字段编码是解析上传文件后的落库键（cmd_import_row.parsed 的 key），
+    # 必须是字母开头的字母/数字/下划线；中文名称应填「字段名称」，
+    # 填反会导致该列解析值无法映射到业务字段（静默丢列）。
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", field_code):
+        raise ImportBizError(
+            f"目标字段编码 [{field_code}] 格式不合法：须以字母开头，仅含字母/数字/下划线"
+            "（如 customer_email）。中文名称请填在「字段名称」输入框。")
 
     template = await import_repo.get_template_by_code(conn, template_code)
     if template is None:
@@ -571,6 +605,38 @@ async def create_job_from_upload(conn, *, template_code: str, file_name: str,
     template = await import_repo.get_template_by_code(conn, template_code)
     if template is None:
         raise ImportBizError(f"导入模板不存在：{template_code}")
+    # 只有已发布模板可用于导入（设计 §02 Configuration-first / §05 泳道旁路配置）：
+    # 草稿或已停用模板的字段映射仍在调整，拿它解析生产文件会造成静默错列。
+    tpl_status = template.get("status")
+    if tpl_status != TEMPLATE_STATUS_CODE["Published"]:
+        state_label = "草稿（Draft）" if tpl_status == TEMPLATE_STATUS_CODE["Draft"] else "已停用"
+        raise ImportBizError(
+            f"模板[{template['template_name']}]当前为{state_label}状态，不能用于导入。"
+            "请先到「平台管理 › 导入模板管理」发布该模板，再回到此处提交。")
+    # 模板与任务的业务上下文必须对应（§15：模板按业务上下文定位）。
+    # 前端下拉已按上下文过滤，这里兜底防绕过：上下文不完整的模板不可用，
+    # 有值维度与任务不一致的模板也不可用（否则文件列结构与业务上下文错配）。
+    tpl_ctx = {k: (template.get(k) or "").strip()
+               for k in ("scene", "bu_scope", "customer_type", "product_line", "source_system")}
+    if not all(tpl_ctx.values()):
+        missing = "、".join(label for label, key in (
+            ("业务场景", "scene"), ("归属 BU", "bu_scope"), ("客户类型", "customer_type"),
+            ("产品线", "product_line"), ("来源系统", "source_system")) if not tpl_ctx[key])
+        raise ImportBizError(
+            f"模板[{template['template_name']}]业务上下文不完整（缺：{missing}），不能用于导入。"
+            "请管理员在「导入模板管理」补全后重新发布。")
+    if tpl_ctx["scene"] != (scene or "").strip():
+        raise ImportBizError(
+            f"模板[{template['template_name']}]的业务场景为 {tpl_ctx['scene']}，"
+            f"与本次任务（{(scene or '').strip() or '未选择'}）不一致，请选择对应业务上下文的模板。")
+    if tpl_ctx["bu_scope"] != (bu_scope or "").strip():
+        raise ImportBizError(
+            f"模板[{template['template_name']}]归属 BU 为 {tpl_ctx['bu_scope']}，"
+            f"与本次任务（{(bu_scope or '').strip() or '未选择'}）不一致，请选择对应业务上下文的模板。")
+    if tpl_ctx["source_system"] != (source_system or "").strip():
+        raise ImportBizError(
+            f"模板[{template['template_name']}]的来源系统为 {tpl_ctx['source_system']}，"
+            f"与本次任务（{(source_system or '').strip() or '未选择'}）不一致，请选择对应业务上下文的模板。")
     mappings = await import_repo.list_mappings(conn, template["template_code"])
     if not mappings:
         raise ImportBizError(f"模板[{template['template_name']}]未配置字段映射，无法解析上传文件")

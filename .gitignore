@@ -140,6 +140,8 @@ _*.sql
 _*.html
 _*.cmd
 _*.bat
+_*.csv
+_*.tsv
 _probe_*
 _serve_*
 _uvicorn_*

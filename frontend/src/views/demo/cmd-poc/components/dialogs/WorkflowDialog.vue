@@ -6,7 +6,7 @@
       <el-descriptions-item label="流程编码">
         <span class="wf-mono">{{ config.flowCode || '—' }}</span>
       </el-descriptions-item>
-      <el-descriptions-item label="流程版本">v{{ config.version ?? '—' }}</el-descriptions-item>
+      <el-descriptions-item label="流程版本">{{ config.version || '—' }}</el-descriptions-item>
       <el-descriptions-item label="部署状态">
         <el-tag :type="config.deployed ? 'success' : 'info'" size="small">
           {{ config.deployed ? '已部署' : '未部署' }}
@@ -191,7 +191,7 @@
       <!-- ---------------- 4. 版本与发布 ---------------- -->
       <el-tab-pane label="版本与发布" name="publish">
         <el-descriptions class="m-b-12" :column="3" size="small" border>
-          <el-descriptions-item label="当前版本">v{{ config.version ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item label="当前版本">{{ config.version || '—' }}</el-descriptions-item>
           <el-descriptions-item label="发布状态">
             <el-tag :type="config.deployed ? 'success' : 'info'" size="small">
               {{ config.deployed ? '已发布到 SpiffWorkflow' : '未发布' }}
@@ -286,13 +286,16 @@ function emptyConfig(): FlowSceneConfigVO {
 
 const configurableCount = computed(() => config.value.nodes.filter(node => node.configurable).length);
 
-/** 版本历史：POC 阶段取当前版本 + 变更说明渲染（后续可接 SpiffWorkflow 版本表） */
+/**
+ * 版本历史：当前部署版本 + 部署时间 + 变更说明（live 模式下来自后端真实数据，
+ * 与「工作流定义 › 版本管理」同一口径；后续可接 /cmd/flow/scene/{code}/versions 全量历史）
+ */
 const versionHistory = computed(() => [
   {
-    version: `v${config.value.version ?? 1}`,
+    version: config.value.version || 'v1.0',
     note: config.value.changeNote || '平台初始化配置',
     source: '当前生效',
-    time: '2026-09-18 10:47'
+    time: (config.value.deployedAt ?? '').replace('T', ' ').slice(0, 19) || '—'
   }
 ]);
 

@@ -10,7 +10,7 @@ from sqlalchemy import select, func, desc
 from ..core.db import get_engine, table
 from ..services import sequence as seq
 from ..services.duplicate import duplicate_check
-from ..workflow.engine import start_instance
+from ..workflow.engine import start_instance, reset_instance_node
 
 
 # 提交必填项（对齐总设计「提交校验」+ 主档必填属性）：
@@ -363,6 +363,127 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
         receipt["peers"] = dup["peers"]
 
     return receipt
+
+
+async def resubmit_application(app_no: str, payload, actor: str = "Business User") -> dict:
+    """被退回申请的「修改重报」（总设计两级审批口径：BU 初审退回 → 申请人修改 → 重进 BU 初审）。
+
+    - 仅 status=returned 的申请可重报；仅更新前端传入的非空字段；
+    - 用合并后的关键字段重新查重 / 重打 DQ 分（改对了信用代码，重复状态要跟着变）；
+    - 同步重开审批任务行（RETURNED → PENDING，节点拉回 BU Scope 初审），
+      并把流程实例镜像从 EndEvent 拉回 BU_REVIEW（复用退回修复的 reset_instance_node）。
+    """
+    import json as _json
+    engine = get_engine()
+    async with engine.begin() as conn:
+        app_t = table("cmd_customer_application")
+        app_row = (await conn.execute(
+            select(app_t).where(app_t.c.app_no == app_no, app_t.c.del_flag == "0")
+        )).mappings().first()
+        if app_row is None:
+            raise ValueError("申请单不存在")
+        if (app_row["status"] or "") != "returned":
+            raise ValueError(f"仅被退回的申请可修改重报（当前状态：{app_row['status']}）")
+
+        updates: dict = {}
+        for f in ("legal_name", "legal_name_en", "credit_code", "short_name", "address",
+                  "contact_name", "contact_phone", "contact_email"):
+            v = getattr(payload, f, None)
+            if v is not None and str(v).strip():
+                updates[f] = str(v).strip()
+        legal_name = updates.get("legal_name") or app_row["legal_name"]
+        if not (legal_name or "").strip():
+            raise ValueError("客户法定名称不能为空")
+        credit_code = updates.get("credit_code") or app_row["credit_code"]
+        address = updates.get("address") or app_row["address"]
+        bu_scope = app_row["bu_scope"]
+
+        # 重跑查重 / 跨BU 判定 / DQ 评分（与 submit_customer 同口径）
+        dup = await duplicate_check(conn, credit_code, legal_name, address, scene="CREATE")
+        cross_peers = await cross_bu_conflicts(conn, credit_code, bu_scope,
+                                               exclude_one_id=app_row["one_id"])
+        cross_bu = bool(cross_peers) or (
+            dup["duplicate_flag"] == "Y"
+            and any((p.get("bu_scope") or "") != (bu_scope or "") for p in dup["peers"]))
+        risk = "High" if (dup["duplicate_flag"] == "Y" or cross_bu) else "Medium"
+        dq_value, dq_grade = dq_score_for({
+            "credit_code": credit_code, "address": address,
+            "province": app_row["province"], "city": app_row["city"],
+            "contact_name": updates.get("contact_name") or app_row["contact_name"],
+            "contact_phone": updates.get("contact_phone") or app_row["contact_phone"],
+        })
+
+        # 命中存量时重写治理证据（键与 submit_customer 对齐，审批弹窗按这些键配对渲染）
+        evidence = None
+        if dup["duplicate_flag"] == "Y" and dup["peers"]:
+            flights = [p for p in dup["peers"] if p.get("source") == "IN_FLIGHT"]
+            top = dup["peers"][0]
+            evidence = {
+                "候选One ID": "、".join(
+                    f"{p['one_id']} · {p.get('legal_name') or ''}" for p in dup["peers"]),
+                "匹配状态": dup["match_state"],
+                "命中来源": "在途申请" if flights else "已发布主档",
+                "在途申请": "是" if flights else "否",
+                "申请名称": legal_name or "",
+                "信用代码": credit_code or "",
+                "注册地址": address or "",
+                "申请BU": bu_scope or "",
+                "候选名称": top.get("legal_name") or "",
+                "候选信用代码": top.get("credit_code") or "",
+                "候选经营地址": top.get("address") or "",
+                "匹配得分": f"{dup.get('score') or 0:.0f}",
+                "查重依据": ("重报后复检：主依据（信用代码 / 经营地址）命中 "
+                             f"{payload.credit_code or credit_code or ''}")
+                            if credit_code else "重报后复检：名称相似命中",
+                "匹配口径": dup.get("basis") or "",
+                "跨BU": "是" if cross_bu else "否",
+                "跨BU命中记录": "；".join(
+                    f"{p['one_id']} · {p.get('legal_name') or ''} · {p.get('bu_scope') or ''}"
+                    for p in cross_peers) or "无",
+            }
+
+        # 1) 申请单：改字段 + 状态回 pending + 重复/DQ 快照刷新
+        await conn.execute(app_t.update().where(app_t.c.app_no == app_no).values(
+            **updates, status="pending", match_state=dup["match_state"],
+            duplicate_flag=dup["duplicate_flag"], dq_score=dq_value, dq_grade=dq_grade,
+            update_time=datetime.now()))
+        # 2) 审批任务行：重开到 BU Scope 初审（BU 队列可见）
+        await conn.execute(table("cmd_approval_task").update()
+                           .where(table("cmd_approval_task").c.task_no == app_no)
+                           .values(status="PENDING", scope="BU",
+                                   current_node_code="BU_REVIEW", current_node_name="BU初审",
+                                   assignee_role="BU_STEWARD", risk_level=risk,
+                                   duplicate_state=dup["match_state"],
+                                   cross_bu_flag="Y" if cross_bu else "N",
+                                   dq_score=dq_value,
+                                   evidence_json=_json.dumps(evidence, ensure_ascii=False)
+                                   if evidence else None,
+                                   submit_time=datetime.now()))
+        # 3) 流程实例镜像：BPMN 无 return 分支时实例已在 EndEvent/COMPLETED，
+        #    重报等于把流程拉回 BU_REVIEW 等待点（与 reset_instance_node 同一机制）
+        await reset_instance_node(app_no, "BU_REVIEW")
+        # 4) 轨迹：时间线 + 步骤条都要体现「修改重报」这一步
+        from .trace import log_action, log_step
+        remark = (getattr(payload, "remark", None) or "").strip() or "修改重报"
+        applicant = ((getattr(payload, "applicant_name", None) or "").strip() or actor)
+        await log_action(
+            conn, task_id=app_row["id"], task_no=app_no, one_id=app_row["one_id"],
+            action_type="RESUBMIT", action_name=remark,
+            from_node_code="APPLY", to_node_code="BU_REVIEW",
+            operator_name=applicant, operator_role="BU_USER", opinion=remark,
+        )
+        await log_step(
+            conn, one_id=app_row["one_id"], task_no=app_no,
+            step_type="BUSINESS", node_code="BU_REVIEW", node_name="BU Scope 初审",
+            action_type="RESUBMIT", action_name=remark,
+            operator_name=applicant, operator_role="BU_USER",
+            from_status="RETURNED", to_status="PENDING", opinion=remark,
+        )
+
+        return {"appNo": app_no, "oneId": app_row["one_id"], "status": "pending",
+                "currentNodeName": "BU Scope 初审", "assigneeRole": "BU_STEWARD",
+                "matchState": dup["match_state"], "duplicateFlag": dup["duplicate_flag"],
+                "dqScore": dq_value, "dqGrade": dq_grade, "riskLevel": risk}
 
 
 async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> Optional[str]:

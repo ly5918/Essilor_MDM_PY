@@ -9,7 +9,7 @@
       <el-select
         v-model="currentCode"
         style="width: 340px"
-        placeholder="暂无模板，请先新建"
+        :placeholder="isAdmin ? '暂无模板，请先新建' : (templates.length ? '请选择已发布模板' : '暂无已发布模板')"
         @change="onTemplateChange"
       >
         <el-option
@@ -18,6 +18,14 @@
           :value="item.templateCode"
           :label="`${item.name} · ${item.version}（${item.status}）`"
         />
+        <!-- 业务用户只拿得到已发布模板：草稿是 Admin 侧待发布配置，不在此列出 -->
+        <template #empty>
+          <div class="tpl-empty">
+            {{ isAdmin
+              ? '暂无模板：点右上角「新建模板」创建'
+              : '暂无已发布模板：请管理员在「平台管理 › 导入模板管理」发布后再下载' }}
+          </div>
+        </template>
       </el-select>
       <el-tag
         v-if="currentTemplate"
@@ -101,7 +109,7 @@
         size="small"
         icon="MagicStick"
         :loading="coreFilling"
-        @click="onFillCore"
+        @click="onFillCore()"
       >
         一键补齐主键字段
       </el-button>
@@ -415,9 +423,14 @@ const loadMappings = async () => {
   }
 };
 
-/** 拉模板清单并保证 currentCode 有效（失效时回落首个已发布 / 首个模板） */
+/** 拉模板清单并保证 currentCode 有效（失效时回落首个已发布 / 首个模板）
+
+ *  非 Admin（业务用户从「批量导入 › 下载模板」进入）只看得到已发布模板：
+ *  草稿是 Admin 侧旁路配置（总设计 §02 Configuration-first / §05 泳道），
+ *  未发布版本不应作为业务填写依据；Admin 取全量以便编辑草稿与发布。
+ */
 const loadTemplates = async () => {
-  templates.value = await listImportTemplates();
+  templates.value = await listImportTemplates(isAdmin.value ? undefined : 'Published');
   const exists = templates.value.some(item => item.templateCode === currentCode.value);
   if (!exists) {
     const preferred = templates.value.find(item => item.status === 'Published') ?? templates.value[0];
@@ -481,7 +494,7 @@ const onSaveTemplate = async () => {
     tplFormVisible.value = false;
     if (isCreate) {
       // 新建后自动切到新模板（编码可能由后端按业务上下文生成，按名称回找）
-      templates.value = await listImportTemplates();
+      templates.value = await listImportTemplates(isAdmin.value ? undefined : 'Published');
       const created = templates.value.find(item => item.name === createdName);
       if (created) currentCode.value = created.templateCode;
       await loadMappings();
@@ -497,7 +510,20 @@ const onToggleStatus = async (next: 'Published' | 'Draft') => {
   const item = currentTemplate.value;
   if (!item) return;
 
-  // 发布前置校验：缺主键字段时先引导补齐，不把用户丢在报错里
+  // 发布前置校验①：业务上下文完整性（§15 模板按业务上下文定位——发布后只会在
+  // 「新建导入任务」中出现在对应上下文下，缺维度会导致任务无法选中模板）
+  const missingCtx = ([
+    ['context', '业务场景'], ['bu', '归属 BU'], ['customerType', '客户类型'],
+    ['productLine', '产品线'], ['sourceSystem', '来源系统']
+  ] as const).filter(([key]) => !(item as unknown as Record<string, unknown>)[key]);
+  if (next === 'Published' && missingCtx.length) {
+    ElMessage.warning(
+      `模板「${item.name}」业务上下文不完整（缺：${missingCtx.map(([, label]) => label).join('、')}），无法发布。` +
+      '请点「编辑模板」补全后再发布——发布后模板将只在对应业务上下文的「新建导入任务」中出现。');
+    return;
+  }
+
+  // 发布前置校验②：缺主键字段时先引导补齐，不把用户丢在报错里
   let autoFilled = false;
   if (next === 'Published' && missingCoreFields.value.length) {
     try {
@@ -533,6 +559,9 @@ const onToggleStatus = async (next: 'Published' | 'Draft') => {
     const msg = await setImportTemplateStatus(item.templateCode, next);
     ElMessage.success(msg);
     await loadTemplates();
+  } catch (error) {
+    // 后端校验不通过（如上下文不完整 / 缺主键字段）时给出可读提示，而不是静默失败
+    ElMessage.warning((error as Error)?.message ?? '操作失败，请重试');
   } finally {
     statusSaving.value = false;
   }
@@ -582,6 +611,16 @@ const onSave = async () => {
   }
   if (!form.value.id && !form.value.fieldCode?.trim()) {
     ElMessage.warning('新增字段必须填写字段编码');
+    return;
+  }
+  // 字段编码是上传文件解析后落库的键（§15 目标字段）：只允许字母开头的字母/数字/下划线；
+  // 中文名填进编码会导致该列解析值无法映射到业务字段（静默丢列），中文名应填「字段名称」
+  if (!form.value.id && form.value.fieldCode && !/^[A-Za-z][A-Za-z0-9_]*$/.test(form.value.fieldCode.trim())) {
+    ElMessage.warning('字段编码格式不正确：须以字母开头，仅含字母/数字/下划线（如 customer_email）；中文名称请填在「字段名称」');
+    return;
+  }
+  if (!form.value.fieldName?.trim()) {
+    ElMessage.warning('字段名称不能为空（展示用中文名，如：客户邮箱）');
     return;
   }
   // 主键字段（去重 / 存量匹配锚点）必须必填，避免手工新增时漏勾
@@ -695,6 +734,15 @@ defineExpose({ submit });
 .tpl-strategy {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+/* 模板下拉空态（Admin：还没建模板；业务用户：已发布模板为 0） */
+.tpl-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+  white-space: normal;
 }
 
 .tpl-source {

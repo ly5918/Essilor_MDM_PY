@@ -27,6 +27,33 @@ BIZ_TYPE_CN = {
     "INTEGRATION_FAIL": "集成失败处理",
 }
 
+# 平台固定 / 可配置节点判定（与 mock / Java CmdFlowSceneConfigServiceImpl 同一口径）：
+# 只有 GC 决策可按场景停用/增删（V6.1 待确认项：High End 必经 GC，Mainstream 可只走 BU 初审），
+# 其余节点为业务入口 / 系统自动 / 主干审批 / 审计链，平台固定不可删除。
+CONFIGURABLE_NODES = {"GC_REVIEW"}
+LOCKED_NODE_CONSTRAINT = {
+    "APPLY": "业务入口：Business User 发起，平台固定不可删除",
+    "INPUT": "申请数据录入与附件，平台固定不可删除",
+    "OCR": "系统自动：OCR 与地址标准化，规则驱动不可删除",
+    "DQ": "系统自动：DQ 打分，结果写入实例变量驱动路由，不可删除",
+    "DUP": "系统自动：Duplicate Check（信用代码 + 经营地址为主依据），不可删除",
+    "BU_REVIEW": "主干审批节点：BU Scope 初审，不可停用；命中条件与办理角色可配置",
+    "RESULT": "系统自动：One ID 生成 / 关联，One ID 稳定不重新生成，不可删除",
+    "PUBLISH": "发布下游与 Retry / Resubmit 由平台统一执行，不可删除",
+    "TRACE": "运行追踪：任务状态与失败原因，平台固定",
+    "AUDIT": "审计证据链：Who / When / What 与 Before / After，只读保留不可删除",
+}
+
+
+def _node_config_of(node_code: str) -> dict:
+    """节点约束标注（FlowSceneNodeVO.locked/configurable/constraint）。"""
+    configurable = node_code in CONFIGURABLE_NODES
+    if configurable:
+        constraint = "可配置：可停用（Mainstream 可只走 BU 初审）或调整升级命中条件（V6.1 待确认项）"
+    else:
+        constraint = LOCKED_NODE_CONSTRAINT.get(node_code, "平台固定节点，不可删除")
+    return {"locked": not configurable, "configurable": configurable, "constraint": constraint}
+
 
 async def _scene_map(conn) -> dict[str, dict]:
     """scene_code → 场景行（cmd_flow_scene）。"""
@@ -388,24 +415,61 @@ async def flow_scene_versions(scene_code: str):
 
 @router.get("/scene/{scene_code}/config")
 async def scene_config_get(scene_code: str):
-    """场景配置（FlowSceneConfigVO）：节点模板 + cmd_flow_node_rule 规则。"""
+    """场景配置（FlowSceneConfigVO）：场景头 + 节点模板 + cmd_flow_node_rule 规则。
+
+    V6.1 设计 16「Workflow配置」要求配置弹窗呈现：流程节点、路由条件（启动条件/表单标识）、
+    SLA、超时升级和邮件通知。此前只返回 nodes/rules，导致弹窗头部
+    「业务场景 — / 流程编码 — / 版本 v— / 未部署」与实际部署状态不符。
+    """
     steps = sl.build_swimlane(scene_code)
-    rules = []
+    conn = await get_engine().connect()
     try:
+        smap = await _scene_map(conn)
+        scene = smap.get(scene_code, {})
+        ver = await flow_def.current_version(conn, scene_code) or {}
         nr = table("cmd_flow_node_rule")
-        conn = await get_engine().connect()
         try:
             rules = [dict(r) for r in (await conn.execute(
                 nr.select().where(nr.c.scene_code == scene_code))).mappings().all()]
-        finally:
-            await conn.close()
-    except Exception:
-        rules = []
+            # 主干 BU 初审规则锁定启用状态（与 mock / 弹窗「启用」开关禁用口径一致）
+            for r in rules:
+                r["locked"] = (r.get("node_code") or "").lower() == "bu_review"
+        except Exception:
+            rules = []
+    finally:
+        await conn.close()
+
+    # ext_json（json 列）：变更说明 / 通知方式 / 通知对象 / 超时动作（平台初始化写入）
+    ext = scene.get("ext_json")
+    if isinstance(ext, str):
+        import json as _json
+        try:
+            ext = _json.loads(ext)
+        except Exception:
+            ext = {}
+    ext = ext or {}
+
     return R.ok({
         "sceneCode": scene_code,
-        "nodes": [{"nodeCode": s["nodeCode"], "nodeName": s["nodeName"],
-                   "nodeType": s["nodeType"], "lane": s["lane"],
-                   "slaHours": None, "note": s["note"]} for s in steps],
+        "sceneName": scene.get("scene_name"),
+        "flowCode": scene.get("flow_code"),
+        "flowName": scene.get("flow_name"),
+        "slaHours": scene.get("sla_hours"),
+        "escalateRule": scene.get("escalate_rule"),
+        "startConditions": scene.get("start_conditions"),
+        "formKey": scene.get("form_key"),
+        # 已部署 = 场景正常且登记了当前版本（与 /scenes 列表同一口径）
+        "deployed": scene.get("status") == "0" and bool(ver),
+        "version": ver.get("version_no"),          # 'v1.0' 字符串（展示层不再拼 v）
+        "deployedAt": ver.get("deployed_at"),
+        "changeNote": ext.get("changeNote"),
+        "timeoutAction": ext.get("timeoutAction"),
+        "notifyMode": ext.get("notifyMode"),
+        "notifyTargets": ext.get("notifyTargets") or [],
+        "nodes": [dict({"nodeCode": s["nodeCode"], "nodeName": s["nodeName"],
+                        "nodeType": s["nodeType"], "lane": s["lane"],
+                        "slaHours": None, "note": s["note"]}, **_node_config_of(s["nodeCode"]))
+                  for s in steps],
         "rules": rules,
     })
 

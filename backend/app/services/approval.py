@@ -14,11 +14,14 @@ from typing import Optional
 from sqlalchemy import select, text
 
 from ..core.db import get_engine, table, flow_instance_table
-from ..workflow.engine import start_instance, complete_current
+from ..workflow.engine import start_instance, complete_current, reset_instance_node
 from .customer import publish_customer
 
 # ---- 常量（对齐 Java CmdConstants） ----------------------------------------
 _FINAL_STATUSES = {"APPROVED", "REJECTED", "COMPLETED", "CANCELLED"}
+# 退回类状态（与 workflow/swimlane.py::RETURNED_STATUSES 同口径）：
+# RETURNED 不是终态——单子被打回上游、仍挂在待办里，后续动作要按「重新流转」解释
+_RETURNED_STATUSES = {"RETURNED", "REWORK", "BACK", "SENT_BACK"}
 _MATCH_EXACT, _MATCH_SUSPECTED, _MATCH_NEW = "EXACT", "SUSPECTED", "NEW"
 
 # 任务状态 → 中文（审批详情头部 / 列表「状态」列）
@@ -36,6 +39,22 @@ _STATUS_TEXT = {
 
 def _status_text(status: str) -> str:
     return _STATUS_TEXT.get((status or "").upper(), status or "-")
+
+
+# 节点编码 → 中文名（任务行 current_node_name 与步骤日志 node_name 共用同一份，
+# 避免同一节点出现两个名字的口径漂移）。
+# END 是引擎「无待办节点」时给出的终态哨兵：流程真正走完才出现，落到界面上必须可读，
+# 直接写 "END" 会让人以为流程卡在一个叫 END 的节点上。
+NODE_NAME_TEXT = {
+    "APPLY": "创建客户申请",
+    "BU_REVIEW": "BU Scope 初审",
+    "GC_REVIEW": "GC Scope 决策",
+    "END": "流程结束",
+}
+
+
+def _node_name(code: Optional[str]) -> Optional[str]:
+    return NODE_NAME_TEXT.get(code, code) if code else code
 
 
 def _fmt_dt(value) -> str:
@@ -148,11 +167,26 @@ def _approve_label(task: dict) -> str:
     return "批准"
 
 
+# 退回按钮文案：必须写清「退到哪一级」，与 do_action 的实际退回目标节点一一对应。
+# 两级人工审批各退一级（总设计故事一：Business User 创建 → BU Scope 初审 → GC Scope 决策）：
+# GC 决策退回 → BU Scope 初审（由 BU 补证据后重新提交 / 升级）；BU 初审退回 → 申请人修改重报。
+# 按钮写「退回BU」而实际退回申请人，是最难排查的一类口径漂移，故统一由这里下发文案。
+_RETURN_BU_SCOPE = "退回BU Scope"
+_RETURN_APPLICANT = "退回申请人修改"
+
+
+def _return_label(gc: bool, reason: str = "") -> str:
+    base = _RETURN_BU_SCOPE if gc else _RETURN_APPLICANT
+    return f"{base}·{reason}" if reason else base
+
+
 def _build_actions(task: dict) -> list[dict]:
     """可执行操作按钮（按 Scope / 场景区分，对齐 Java buildActions）。"""
     status = (task.get("status") or "").upper()
     if status in _FINAL_STATUSES:
-        # 终态任务（已批准/已拒绝/已退回/已取消/已完成）不再显示操作按钮
+        # 终态任务（已批准/已拒绝/已取消/已完成）不再显示操作按钮。
+        # RETURNED 不是终态：退回只是打回上游，单子仍在流程内，必须继续给按钮，
+        # 否则 BU Scope 收到 GC 退回来的单子只能看不能办（口径见 _FINAL_STATUSES）。
         return []
     gc = (task.get("scope") or "").upper() == "GC"
     act = lambda key, label, type_: {"key": key, "label": label, "type": type_}
@@ -161,44 +195,44 @@ def _build_actions(task: dict) -> list[dict]:
         # 跨BU客户合并：批准即「确认合并」——执行 Golden Record 合并 / 行级关联
         return [act("APPROVE", "确认合并", "primary"),
                 act("REJECT", "拒绝合并", "danger"),
-                act("RETURN", "退回BU", "warning")]
+                act("RETURN", _return_label(gc), "warning")]
     if _is_in_flight_duplicate(task):
         # 命中的是在途申请（对方还不是主档）：处置是「撤回本单 / 确认为不同主体 / 退回修正」，
         # 不提供「关联已有主档」——合并到一个尚不存在的主档在业务上不成立
         if gc:
             return [act("REJECT", "确认重复·撤回本单", "danger"),
                     act("CREATE_NEW", "确认为不同主体·继续新建", "warning"),
-                    act("RETURN", "退回BU修正信用代码", "info")]
+                    act("RETURN", _return_label(True, "修正信用代码"), "info")]
         if task.get("cross_bu_flag") == "Y":
             # 跨BU在途重复：BU 无权单方定案（总设计「故事一」：BU初审→GC决策→关联已有并发布）。
             # 「确认为不同主体·继续新建」会把同码主体在另一个 BU 落成独立 Active 记录，
             # 直接绕开 GC——因此 BU 侧只保留「升级GC决策 / 撤回本单 / 退回」。
             return [act("ESCALATE", "升级GC决策", "primary"),
                     act("REJECT", "确认重复·撤回本单", "danger"),
-                    act("RETURN", "退回补充", "info")]
+                    act("RETURN", _return_label(False, "修正信用代码"), "info")]
         return [act("REJECT", "确认重复·撤回本单", "danger"),
                 act("EXCLUDE", "确认为不同主体·继续新建", "warning"),
-                act("RETURN", "退回补充", "info")]
+                act("RETURN", _return_label(False, "修正信用代码"), "info")]
     if _is_duplicate_link_approval(task):
         if gc:
             # GC Scope 决策：跨BU确认关联已有、创建新主档或退回修复
             return [act("MERGE", "确认关联已有", "primary"),
                     act("CREATE_NEW", "创建新主档", "success"),
-                    act("RETURN", "退回BU修复", "warning")]
+                    act("RETURN", _return_label(True, "修复"), "warning")]
         if task.get("cross_bu_flag") == "Y":
             # BU Scope 初审：跨BU无权直接定案——只能升级 GC 或退回补充，
             # 不给「排除重复·继续新建」（否则会在另一个 BU 落成同码独立主档，
             # 泳道图上「BU初审 → GC决策」的核心场景直接走不通：BUG-PY-06）
             return [act("ESCALATE", "升级GC决策", "primary"),
-                    act("RETURN", "退回补充", "info")]
+                    act("RETURN", _return_label(False, "补充"), "info")]
         # Same-BU：BU 直接决策
         return [act("MERGE", "确认合并", "primary"),
                 act("EXCLUDE", "排除重复·继续新建", "warning"),
-                act("RETURN", "退回补充", "info")]
+                act("RETURN", _return_label(False, "补充"), "info")]
     # 默认分支：客户新建 NEW / 变更 / 停用 / 层级 / 批量导入确认等（无合并语义）
     actions = [act("APPROVE", _approve_label(task), "primary"),
                act("REJECT", "拒绝", "danger"),
-               act("RETURN", "退回BU" if gc else "退回补充", "warning")]
+               act("RETURN", _return_label(gc), "warning")]
     if not gc:
         actions.append(act("ESCALATE", "升级GC", "info"))
     return actions
@@ -287,8 +321,24 @@ async def do_action(task_no: str, action: str, actor: str,
         if (task.get("status") or "").upper() in _FINAL_STATUSES:
             raise RuntimeError(f"任务已办结（{task.get('status')}），不能重复审批: {task_no}")
 
+        # 审批意见必填：审批轨迹是 Auditor 的最终证据链（总设计「每一步均形成状态、版本、
+        # 差异和审计证据」），空意见会让轨迹只剩「谁点了什么」，无法还原判断依据。
+        # 前端已按未填写置灰全部动作按钮，这里再做一道服务端闸门——
+        # 直接调 API 或旧前端缓存都绕不过去。纯空白同样视为未填写。
+        opinion = (opinion or "").strip()
+        if not opinion:
+            raise RuntimeError("请先填写审批意见，再执行审批操作")
+
         # 跨BU重复护栏（BUG-PY-06）：BU 不得对跨BU重复做定案，必须先升级 GC。
         _guard_cross_bu(task, action)
+
+        # 节点-动作匹配校验：ESCALATE 只能由 BU Scope 初审发起。若单子已停在
+        # GC_REVIEW 还收到 ESCALATE（绕过 UI 直调 API / 并发双击），引擎会按默认流
+        # 直接办结并发布主档——这是流程级事故，必须在这一层拦下。
+        if action == "escalate" and (task.get("current_node_code") or "BU_REVIEW").upper() != "BU_REVIEW":
+            raise RuntimeError(
+                f"当前节点（{task.get('current_node_name') or task.get('current_node_code')}）不支持升级GC，"
+                "升级只能由 BU Scope 初审发起")
 
         await _ensure_flow_started(conn, task)
         result = await complete_current(task_no, action, actor, opinion or "")
@@ -296,26 +346,68 @@ async def do_action(task_no: str, action: str, actor: str,
         node = result.get("current_node")
         next_role = result.get("role")
 
+        is_return = action == "return"
+        # 引擎镜像要落到哪个节点（退回 / 退回后重新流转时用，见文末 reset_instance_node 调用）
+        mirror_to: Optional[str] = None
+
+        # ---- 退回后重新流转：按退回目标节点推出本次动作的落点 --------------
+        # 退回那一跳已把引擎实例判成 COMPLETED（BPMN 无 return 分支，退回是 Python 侧
+        # 改节点模拟的，见 reset_instance_node），所以对一张 RETURNED 的任务再收到动作时，
+        # 引擎几乎必然回「流程走完 + outcome=approved」——照单全收会把「升级GC」执行成
+        # 「流程结束 → 发布主档」。退回目标节点才是新的当前节点，据此纠正落点。
+        resuming = (task.get("status") or "").upper() in _RETURNED_STATUSES
+        if resuming and action == "escalate":
+            node, next_role = "GC_REVIEW", "GC_STEWARD"
+            result["status"] = "RUNNING"      # 覆盖引擎的 COMPLETED：单子仍在流程内
+            result["outcome"] = None
+            mirror_to = "GC_REVIEW"
+
         # 轨迹：审批动作（时间线数据源）
         from .trace import log_action
         cur_node_code = task.get("current_node_code") or "BU_REVIEW"
+
+        # ---- 退回目标：两级人工审批各退一级 --------------------------------
+        # 总设计「故事一」把审批定成两级：Business User 创建 → BU Scope 初审 →
+        # （跨BU/高风险才升级）GC Scope 决策，两级各自带退回：
+        #   · GC Scope 决策 退回 → 只退到 BU Scope 初审，由 BU 补充证据后重新提交 / 再升级；
+        #   · BU Scope 初审 退回 → 退回申请人（创建客户申请）修改重报。
+        # 原实现（Java CmdApprovalServiceImpl 与 Python 侧同源）把退回一律落到 APPLY，
+        # 于是 GC 点「退回BU」会一步打回申请人、跳过 BU 初审，与总设计泳道
+        # 「BU Scope 初审 = 确认升级/排除/退回」「GC Scope 决策 = 关联已有/新建/退回修复」
+        # 的两级口径相矛盾（表现为：GC 退回来的单子直接落到「创建客户申请」）。
+        return_from_gc = (cur_node_code or "").upper() == "GC_REVIEW" or \
+            (task.get("scope") or "").upper() == "GC"
+        return_to_code = "BU_REVIEW" if return_from_gc else "APPLY"
+        return_to_name = "BU Scope 初审" if return_from_gc else "创建客户申请"
+        return_to_role = "BU_STEWARD" if return_from_gc else "BU_USER"
+        if is_return:
+            mirror_to = return_to_code
+        # 退回动作的 to_node 必须写退回目标：引擎在没有 return 分支时会按默认流走到
+        # EndEvent（current_node=None），沿用 node 会让 from==to，泳道图只能靠
+        # action_type 猜方向。
+        to_node_code = return_to_code if is_return else (node or cur_node_code)
+
         await log_action(
             conn, task_id=task.get("id"), task_no=task_no, one_id=task.get("one_id"),
             action_type=action.upper(), action_name=opinion or action.upper(),
-            from_node_code=cur_node_code, to_node_code=node or cur_node_code,
+            from_node_code=cur_node_code, to_node_code=to_node_code,
             operator_name=actor, operator_role=task.get("assignee_role") or "SYSTEM",
             opinion=opinion or "",
         )
 
         # 更新审批任务行
         status = task["status"]
-        if result["status"] == "COMPLETED":
-            if action == "return":
-                # 退回BU：任务置 RETURNED 回 BU 队列修复（对齐 Java RETURN 口径），
-                # 不能走 outcome 默认 approved 分支误判成办结
-                status = "RETURNED"
-            else:
-                status = "REJECTED" if outcome == "rejected" else "COMPLETED"
+        if is_return:
+            # 退回的目标状态由「退回目标」直接决定，不看引擎走到哪：BPMN 没有
+            # return 分支，跨BU单（crossBu=True）退回时引擎会按升级流走到
+            # GC_REVIEW（RUNNING）而不是 END，若按 result.status 分支会漏置状态。
+            #   · BU 退回申请人 → RETURNED（等申请人修改重报）
+            #   · GC 退回 BU 初审 → PENDING（仍在流程内，BU 补证据后重新决策）
+            status = "RETURNED" if return_to_code == "APPLY" else "PENDING"
+        elif result["status"] == "COMPLETED":
+            # 流程真正走完：按引擎 outcome 定案（outcome=approved/rejected；
+            # ESCALATE 等中途动作引擎返回 RUNNING，不会进这里）
+            status = "REJECTED" if outcome == "rejected" else "COMPLETED"
         elif action == "reject":
             status = "REJECTED"
         # 升级后任务仍是「待决策」：保持 PENDING 并随节点切到 GC 队列。
@@ -327,11 +419,10 @@ async def do_action(task_no: str, action: str, actor: str,
 
         # 步骤日志（步骤条数据源）
         from .trace import log_step
-        node_name_map = {"BU_REVIEW": "BU Scope 初审", "GC_REVIEW": "GC Scope 决策"}
         await log_step(
             conn, one_id=task.get("one_id"), task_no=task_no,
-            step_type="BUSINESS", node_code=node or cur_node_code,
-            node_name=node_name_map.get(node or cur_node_code, node or cur_node_code),
+            step_type="BUSINESS", node_code=to_node_code,
+            node_name=_node_name(to_node_code) or to_node_code,
             action_type=action.upper(), action_name=opinion or action.upper(),
             operator_name=actor, operator_role=task.get("assignee_role") or "SYSTEM",
             from_status=task.get("status") or "-", to_status=status,
@@ -341,8 +432,7 @@ async def do_action(task_no: str, action: str, actor: str,
             "current_node_code": node or task["current_node_code"],
             # 名称与编码同步更新：current_node_name 是泳道图 resolve_current_node
             # 的回退信号，只改编码不改名会导致「上一步仍显示 to do」
-            "current_node_name": {"BU_REVIEW": "BU Scope 初审",
-                                  "GC_REVIEW": "GC Scope 决策"}.get(node, node) or task["current_node_name"],
+            "current_node_name": _node_name(node) or task["current_node_name"],
             "assignee_role": next_role or task["assignee_role"],
             "opinion": opinion,
             "status": status,
@@ -351,17 +441,26 @@ async def do_action(task_no: str, action: str, actor: str,
         # （对齐 Java update.setScope(resolveScope(instance.getNodeCode(), ...))）
         if action == "escalate" or (next_role or "").upper() == "GC" or "GC" in (node or "").upper():
             update_vals["scope"] = "GC"
-        if action == "return":
-            # 退回BU：任务回到 BU 队列，当前节点回到申请起点等待修复重报
+        if is_return:
+            # 退回到「谁该办」那一格：scope=BU 让单子回到 BU 队列
+            # （BU Queue = scope=BU 且 status ∈ PENDING/RETURNED），
+            # 节点与办理角色按发起层级分开置——GC 退回停在 BU Scope 初审，
+            # BU 退回才是回申请人改稿。
             update_vals["scope"] = "BU"
-            update_vals["current_node_code"] = "APPLY"
-            update_vals["current_node_name"] = "创建客户申请"
-            update_vals["assignee_role"] = "BU_USER"
-        if result["status"] == "COMPLETED" and status != "RETURNED":
+            update_vals["current_node_code"] = return_to_code
+            update_vals["current_node_name"] = return_to_name
+            update_vals["assignee_role"] = return_to_role
+        if not is_return and result["status"] == "COMPLETED":
             update_vals["finish_time"] = datetime.now()
         await conn.execute(
             table("cmd_approval_task").update()
             .where(table("cmd_approval_task").c.task_no == task_no).values(**update_vals))
+        if mirror_to:
+            # 引擎实例镜像拉回目标节点：BPMN 里没有 return 分支，退回瞬间实例会按默认流
+            # 走到 EndEvent 被判 COMPLETED（current_node=NULL），与任务行「停在 BU Scope
+            # 初审」自相矛盾——流程实例列表里这单显示「已完成」，待办里却还挂着。
+            # 详见 workflow/engine.py::reset_instance_node。
+            await reset_instance_node(task_no, mirror_to)
 
         # 审计留痕：审批决策（审计中心可按 One ID / 申请编号检索，对齐 Java doAction 7)）
         from .trace import log_audit_event
@@ -377,26 +476,36 @@ async def do_action(task_no: str, action: str, actor: str,
         )
 
         # 业务回调
+        #
+        # 退回不是「业务结论」：它只把单子打回上游补材料，绝不触发生效类回调
+        # （合并执行 / 规则生效 / 集成重试 / 层级关系生效 / 主档发布）。引擎在退回时
+        # 仍会把实例判成 COMPLETED 并给出 outcome=approved（BPMN 没有 return 分支，
+        # 退回是 Python 侧改节点模拟的），所以此前按 outcome 分支的每个回调都被误触发：
+        # 最典型的是 MERGE——GC 点「退回BU」会真的执行合并（被合并方置 inactive +
+        # 写合并记录）。这里统一用 is_return 拦住，各分支再按需处理退回语义。
         biz_type = task["biz_type"]
         if biz_type == "CUSTOMER_CREATE":
             app = (await conn.execute(
                 table("cmd_customer_application").select()
                 .where(table("cmd_customer_application").c.app_no == task_no))).mappings().first()
             if app is not None:
-                if action == "return":
-                    # 退回BU：申请退回待修复，绝不发布主档
+                if is_return and return_to_code == "APPLY":
+                    # 仅 BU 退回申请人才把申请单置 returned（等申请人修改重报）；
+                    # GC 退回只是回到 BU Scope 初审，单子仍在流程内，保持 pending
                     await conn.execute(
                         table("cmd_customer_application").update()
                         .where(table("cmd_customer_application").c.app_no == task_no)
                         .values(status="returned"))
-                elif result["status"] == "COMPLETED":
-                    # 仅在流程真正走完时发布/驳回（修复：ESCALATE 时 outcome=None
-                    # 曾被 `outcome or "approved"` 兜底成 approved，升级即误发布主档）
+                elif not is_return and result["status"] == "COMPLETED":
+                    # 仅在流程真正走完（且不是退回）时发布/驳回：退回时引擎把实例判成
+                    # COMPLETED、outcome 被兜底成 approved，若不拦住 GC 退回会误发布主档
+                    # （实测 AP-0003：GC 点退回 → 主档直接发布）。修复：ESCALATE 时
+                    # outcome=None 也曾被兜底成 approved，升级即误发布主档。
                     # 透传 GC/BU 决策键：create_new / exclude → 新建主档不链路已有
                     await publish_customer(conn, dict(app), outcome or "approved",
                                            decision=action)
                 # 流程仍在流转（如 ESCALATE）：不动申请、不发布主档
-        elif biz_type == "MERGE" and outcome == "approved":
+        elif biz_type == "MERGE" and outcome == "approved" and not is_return:
             await exec_merge_task(conn, task)
         elif biz_type == "IMPORT" and result["status"] == "COMPLETED":
             # 批量导入确认审批闭环：approve→New 行生成 One ID / reject→FAILED / return→待复核
@@ -404,21 +513,31 @@ async def do_action(task_no: str, action: str, actor: str,
             action_type = {"approve": "APPROVE", "reject": "REJECT",
                            "return": "RETURN"}.get(action, action.upper())
             await on_approval(conn, task["biz_id"], action_type, actor or "BU Steward")
-        elif biz_type == "CUSTOMER_CHANGE" and outcome in ("approved",):
+        elif biz_type == "CUSTOMER_CHANGE" and not is_return and outcome in ("approved",):
             await conn.execute(
                 table("cmd_change_request").update()
                 .where(table("cmd_change_request").c.request_code == task_no)
                 .values(status="APPROVED", approved_by=0, approved_time=datetime.now()))
-        elif biz_type in ("DQ_RULE_CHANGE", "MATCH_RULE_CHANGE") and result["status"] == "COMPLETED":
+        elif biz_type == "CUSTOMER_CHANGE" and is_return:
+            # 退回：变更单退回待补充（对齐 Java syncChangeRequestStatus 的
+            # ACTION_RETURN → CHG_STATUS_RETURNED），绝不置 APPROVED
+            await conn.execute(
+                table("cmd_change_request").update()
+                .where(table("cmd_change_request").c.request_code == task_no)
+                .values(status="RETURNED"))
+        elif biz_type in ("DQ_RULE_CHANGE", "MATCH_RULE_CHANGE") \
+                and result["status"] == "COMPLETED" and not is_return:
             # 规则变更闭环：approve→规则生效（status=1）；reject→删草稿/回滚旧值
+            # （退回只是打回申请侧改稿，规则保持草稿态，不能在这里生效）
             from .rule_flow import apply_rule_outcome
             await apply_rule_outcome(conn, task, outcome or "approved")
-        elif biz_type == "INTEGRATION_FAIL" and outcome == "approved":
+        elif biz_type == "INTEGRATION_FAIL" and outcome == "approved" and not is_return:
             # 集成失败处理闭环：approve→生成重试运行并标记原批次 RETRYING
             from .rule_flow import apply_integration_retry
             await apply_integration_retry(conn, task)
-        elif biz_type == "HIER_RELATION" and result["status"] == "COMPLETED":
+        elif biz_type == "HIER_RELATION" and result["status"] == "COMPLETED" and not is_return:
             # 层级关系闭环：approve→关系生效；reject→关系作废
+            # （退回：关系保持原状等待重报，既不生效也不作废）
             new_status = "Effective" if (outcome or "approved") == "approved" else "Rejected"
             await conn.execute(
                 table("cmd_hierarchy_relation").update()

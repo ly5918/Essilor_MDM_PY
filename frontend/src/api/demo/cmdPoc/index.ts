@@ -453,7 +453,10 @@ function toApplicationVO(row: Record<string, unknown>): CustomerApplicationVO {
     taskStatus: row.taskStatus as string | undefined,
     dupGroupSize: row.dupGroupSize == null ? undefined : Number(row.dupGroupSize),
     dupInFlightCount: row.dupInFlightCount == null ? undefined : Number(row.dupInFlightCount),
-    dupPeerSummary: row.dupPeerSummary as string | undefined
+    dupPeerSummary: row.dupPeerSummary as string | undefined,
+    address: row.address as string | undefined,
+    contactName: row.contactName as string | undefined,
+    contactPhone: row.contactPhone as string | undefined
   };
 }
 
@@ -589,6 +592,43 @@ export const deactivateCustomer = async (data: DeactivateForm): Promise<string> 
     request({ url: `/cmd/customer/deactivate/${data.oneId}`, method: 'put', data: { reason: data.reason } })
   );
   return '停用申请已提交，等待审批生效';
+};
+
+/** 修改重报入参：仅传需要修改的字段，后端只更新非空项 */
+export interface CustomerResubmitForm {
+  legalName?: string;
+  creditCode?: string;
+  address?: string;
+  contactName?: string;
+  contactPhone?: string;
+  /** 修改说明：记入流程轨迹（时间线 + 步骤条） */
+  remark?: string;
+}
+
+/**
+ * 被退回申请「修改重报」（总设计两级审批口径：BU 初审退回 → 申请人修改 → 重进 BU 初审）。
+ * 后端重跑查重 / DQ 评分，并把审批任务与流程实例拉回 BU Scope 初审。
+ */
+export const resubmitCustomerApplication = async (
+  appNo: string,
+  data: CustomerResubmitForm
+): Promise<string> => {
+  if (!useLive('customer')) return delay('修改重报成功，已重新进入 BU Scope 初审');
+  await unwrap(
+    request({
+      url: `/cmd/customer/application/${encodeURIComponent(appNo)}/resubmit`,
+      method: 'put',
+      data: {
+        legalName: data.legalName || undefined,
+        creditCode: data.creditCode || undefined,
+        address: data.address || undefined,
+        contactName: data.contactName || undefined,
+        contactPhone: data.contactPhone || undefined,
+        remark: data.remark || undefined
+      }
+    })
+  );
+  return '修改重报成功，已重新进入 BU Scope 初审';
 };
 
 /* ============================== 3. 元数据字段 ============================== */
@@ -964,9 +1004,18 @@ export const createImportJob = async (fileName: string): Promise<string> => {
   return `导入任务已创建：${jobCode}`;
 };
 
-export const listImportTemplates = async (): Promise<ImportTemplateVO[]> => {
+/**
+ * 模板清单
+ * <p>
+ * status 传 'Published' 时只取已发布模板：业务侧（新建导入任务 / 下载模板）只能选
+ * 已发布版本（总设计 §02 Configuration-first、§05 泳道「模板与规则配置」为 Admin 旁路）。
+ * 平台管理的模板管理不传，取全量以便编辑草稿。
+ */
+export const listImportTemplates = async (status?: 'Published' | 'Draft'): Promise<ImportTemplateVO[]> => {
   if (!useLive('import')) return delay(mock.mockImportTemplates);
-  const rows = await unwrap<CmdImportTemplateRow[]>(request({ url: '/cmd/import/template/list', method: 'get' }));
+  const rows = await unwrap<CmdImportTemplateRow[]>(
+    request({ url: '/cmd/import/template/list', method: 'get', params: status ? { status } : {} })
+  );
   return (rows ?? []).map(row => ({
     id: row.id,
     templateCode: row.templateCode ?? '',
