@@ -21,6 +21,13 @@ export interface PocMenu {
    * 以及 Business User、Platform Admin、Auditor 角色的全部菜单均不显示角标。
    */
   requiresApproval?: boolean;
+  /**
+   * 角标数字来源（不写则无角标）：
+   * - `approval`：走后端 `/cmd/nav/badge`（审批类菜单，仅 BU / GC 角色有值）；
+   * - `inFlight`：走 `/cmd/customer/application/stats` 的在途申请数（与「处理中申请」列表同口径），
+   *   任何有该菜单的角色都能显示 —— 它不是审批职责，而是「我提交的东西还在飞」的自有数据。
+   */
+  badge?: 'approval' | 'inFlight';
   /** 菜单图标（纯文字占位，避免引入图标库差异） */
   icon: string;
   /** 子菜单（RuoYi 二级菜单样式，如「工作流」下的两个实例列表视图） */
@@ -68,6 +75,27 @@ const FLOW_CENTER_MENU: PocMenu = {
   ]
 };
 
+/**
+ * 「客户管理」二级菜单：主档查询与申请跟进**分成两个菜单项**。
+ *
+ * 为什么不做成同一页里的「已生效主档 / 处理中申请」分段按钮：
+ * 1. 两套列表口径不同（Golden Record vs 申请单），用 tab 切换时用户看不到「另一边还有多少条」，
+ *    提交完申请停在主档页会以为没提交成功；
+ * 2. 分段按钮藏在列表卡头里，新用户不会主动去点；
+ * 3. 拆成菜单后，「处理中申请」可以挂常驻角标（在途条数），申请跟进和层级 / 变更一样是平级入口。
+ *
+ * 父菜单名各角色不同（客户管理 / 客户主档 / 全局客户主档 / 客户只读查询），故用工厂生成。
+ */
+const customerCenterMenu = (label: string): PocMenu => ({
+  id: 'sub-customers',
+  label,
+  icon: '客',
+  children: [
+    { id: 'customers', label: '已生效主档', icon: '档' },
+    { id: 'custapps', label: '处理中申请', icon: '申', badge: 'inFlight' }
+  ]
+});
+
 export const ROLE_LIST: PocRole[] = [
   {
     key: 'business',
@@ -78,7 +106,7 @@ export const ROLE_LIST: PocRole[] = [
     readOnly: false,
     menus: [
       { id: 'dash', label: '工作台', icon: '工' },
-      { id: 'customers', label: '客户管理', icon: '客' },
+      customerCenterMenu('客户管理'),
       { id: 'batch', label: '批量导入', icon: '批' },
       { id: 'hier', label: '客户层级', icon: '层' },
       { id: 'change', label: '变更与停用', icon: '变' },
@@ -95,7 +123,7 @@ export const ROLE_LIST: PocRole[] = [
     menus: [
       { id: 'dash', label: '工作台', icon: '工' },
       { id: 'approval', label: '治理与审批', icon: '审', requiresApproval: true },
-      { id: 'customers', label: '客户主档', icon: '客' },
+      customerCenterMenu('客户主档'),
       { id: 'hier', label: '客户层级', icon: '层' },
       { id: 'batch', label: '批量治理', icon: '批', requiresApproval: true },
       { id: 'change', label: '变更与停用', icon: '变' },
@@ -112,7 +140,7 @@ export const ROLE_LIST: PocRole[] = [
     menus: [
       { id: 'dash', label: '全局工作台', icon: '工' },
       { id: 'approval', label: '全局治理决策', icon: '审', requiresApproval: true },
-      { id: 'customers', label: '全局客户主档', icon: '客' },
+      customerCenterMenu('全局客户主档'),
       { id: 'hier', label: '客户层级', icon: '层' },
       { id: 'batch', label: '批量治理', icon: '批', requiresApproval: true },
       { id: 'change', label: '变更与停用', icon: '变' },
@@ -145,7 +173,7 @@ export const ROLE_LIST: PocRole[] = [
     menus: [
       { id: 'dash', label: '审计工作台', icon: '工' },
       { id: 'audit', label: '审计中心', icon: '审' },
-      { id: 'customers', label: '客户只读查询', icon: '客' },
+      customerCenterMenu('客户只读查询'),
       { id: 'hier', label: '层级只读查询', icon: '层' },
       FLOW_CENTER_MENU
     ]

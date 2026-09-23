@@ -74,18 +74,11 @@
         <div class="cust-head">
           <span class="card-title">{{ view === 'master' ? '客户主档列表' : '处理中申请' }}</span>
           <!--
-            视图分段（总设计「客户管理 = 主档统一查询入口」的落地形态）：
-            主档视图 = Golden Record 查询（默认）；处理中视图 = 尚未审批完成的申请单。
-            角标 n 与工作台待办 / 治理与审批队列同口径（pending + returned），
-            保证「这里看到的数字」和「待办里看到的数字」永远一致。
+            视图由**菜单页**决定（客户管理 › 已生效主档 / 处理中申请），不再在卡头放分段按钮：
+            分段按钮把其中一个入口藏在列表里，提交完申请的用户停在主档页看不到自己那条，会以为没提交成功。
+            这里只留一句口径说明，告诉用户「另一种记录在哪看」。
           -->
-          <el-radio-group v-model="view" class="cust-view-switch" @change="onViewChange">
-            <el-radio-button value="master">已生效主档</el-radio-button>
-            <el-radio-button value="inFlight">
-              处理中申请
-              <em v-if="appStats.inFlight > 0" class="cust-view-badge">{{ appStats.inFlight }}</em>
-            </el-radio-button>
-          </el-radio-group>
+          <span class="cust-head-hint">{{ viewHint }}</span>
         </div>
       </template>
 
@@ -330,10 +323,9 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { getCustomerApplicationStats, listCustomerApplications, listCustomers } from '@/api/demo/cmdPoc';
+import { listCustomerApplications, listCustomers } from '@/api/demo/cmdPoc';
 import type {
   CustomerApplicationQuery,
-  CustomerApplicationStats,
   CustomerApplicationVO,
   CustomerQuery,
   CustomerVO
@@ -354,18 +346,31 @@ import {
 
 defineOptions({ name: 'CmdPocCustomersPanel' });
 
+/**
+ * 初始视图由所在菜单页决定（外壳 index.vue 传）：'master' 已生效主档 / 'inFlight' 处理中申请。
+ * 组件用 `currentPage` 作为 key，切换菜单即重建，因此这里只读一次初值。
+ */
+const props = defineProps<{ defaultView?: 'master' | 'inFlight' }>();
+
 const { readOnly, role, openDialog, hierarchyIndex, loadHierarchyIndex, badgeVersion } = useCmdPoc();
 
 /** 表格高度自适应：分页条固定在内容区底部，不随数据条数浮动 */
 const { tableRef, tableHeight, recalc } = useListTableHeight(70);
 
 /**
- * 视图分段：master = 已生效主档（Golden Record，默认）；inFlight = 处理中申请。
+ * 视图：master = 已生效主档（Golden Record）；inFlight = 处理中申请。
  * <p>
  * 申请态与主档分离后，两者是不同的表、不同的详情：主档视图做「统一查询」，
- * 处理中视图做「跟进 + 跳流程」，不再混在一张列表里。
+ * 处理中视图做「跟进 + 跳流程」，不再混在一张列表里，也不再由页内分段按钮切换。
  */
-const view = ref<'master' | 'inFlight'>('master');
+const view = ref<'master' | 'inFlight'>(props.defaultView ?? 'master');
+
+/** 卡头右侧口径说明：明确「当前看的是哪一类记录」「另一种去哪看」 */
+const viewHint = computed(() =>
+  view.value === 'master'
+    ? '仅含已发布为 Golden Record 的客户；尚未审批完成的申请见「处理中申请」'
+    : '尚未审批完成的申请（待审批 / 已退回）；审批通过后发布为「已生效主档」'
+);
 
 const loading = ref(true);
 /** 请求失败原因：非空时页面顶部展示错误条 + 「重新加载」，避免把「取不到」呈现成「没有」 */
@@ -386,15 +391,7 @@ const total = ref(0);
 /** 处理中申请视图数据 */
 const appRows = ref<CustomerApplicationVO[]>([]);
 const appTotal = ref(0);
-/** 申请单统计（分段角标数据源；inFlight = pending + returned，与待办队列同口径） */
-const appStats = ref<CustomerApplicationStats>({
-  total: 0,
-  pending: 0,
-  returned: 0,
-  rejected: 0,
-  approved: 0,
-  inFlight: 0
-});
+/** 申请单在途条数角标已上移到左侧菜单（「客户管理 › 处理中申请」），面板内不再重复展示 */
 
 /** 状态下拉随视图切换：主档字典 / 申请单字典 */
 const statusOptions = computed(() => (view.value === 'master' ? CUSTOMER_STATUS_OPTIONS : APPLICATION_STATUS_OPTIONS));
@@ -585,11 +582,8 @@ watch(
 watch(() => [query.value.bu, query.value.customerType, query.value.status], () => scheduleQuery(0, true));
 /** 分页：翻页 / 改每页条数即查库（不回第一页） */
 watch(() => [page.value.current, page.value.size], () => scheduleQuery(0));
-/** 新建 / 审批等操作后（badgeVersion 自增）自动刷新 + 刷新分段角标 */
-watch(badgeVersion, () => {
-  scheduleQuery(0);
-  void loadAppStats();
-});
+/** 新建 / 审批等操作后（badgeVersion 自增）自动刷新（菜单角标由侧栏自行刷新） */
+watch(badgeVersion, () => scheduleQuery(0));
 
 /** 查询按钮：按当前条件立即查库，列表直接刷新（不再弹出结果弹窗） */
 const onSearch = () => scheduleQuery(0, true);
@@ -598,22 +592,6 @@ const onReset = () => {
   query.value = { keyword: '', bu: '', customerType: '', status: undefined };
   page.value.current = 1;
   scheduleQuery(0, true);
-};
-
-/** 切换视图：状态筛选语义随视图变化，重置后重查（角标已单独维护，无需重取） */
-const onViewChange = () => {
-  query.value.status = undefined;
-  page.value.current = 1;
-  scheduleQuery(0, true);
-};
-
-/** 拉取申请单统计（「处理中申请」角标），失败时保持 0，角标隐藏不影响主视图 */
-const loadAppStats = async () => {
-  try {
-    appStats.value = await getCustomerApplicationStats();
-  } catch {
-    /* 角标是辅助信息，取不到就不显示数字 */
-  }
 };
 
 /** 行数据类型由 el-table 统一为 DefaultRow，此处收敛断言，保证模板调用无需类型体操 */
@@ -636,8 +614,6 @@ onMounted(async () => {
   await doQuery();
   // 层级归属列的数据来源：层级树（已归位）+ 待归位主数据
   await loadHierarchyIndex();
-  // 分段角标：与工作台待办 / 治理与审批队列同口径（pending + returned）
-  await loadAppStats();
 });
 
 onUnmounted(() => {
@@ -646,33 +622,22 @@ onUnmounted(() => {
 </script>
 
 <style scoped lang="scss">
-/* 视图分段：卡头左侧标题 + 右侧分段按钮 */
+/* 卡头：标题 + 一行口径说明（说明在窄屏省略号截断，不挤压标题、不换行） */
 .cust-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 12px;
 }
 
-.cust-view-switch {
-  :deep(.el-radio-button__inner) {
-    font-size: 12.5px;
-  }
-}
-
-/* 「处理中申请」角标：与工作台待办同口径，失败/为 0 时隐藏 */
-.cust-view-badge {
-  display: inline-block;
-  min-width: 16px;
-  margin-left: 4px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--el-color-danger);
-  font-style: normal;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-  color: #fff;
+.cust-head-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--g-text2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 权限与查询说明：压成一行 12px 小字，避免整条彩色 alert 占据一个视觉带 */

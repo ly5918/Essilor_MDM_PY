@@ -121,9 +121,11 @@ async def update_row(conn, row_id: int, patch: dict) -> None:
 
 
 async def list_templates(conn) -> List[dict]:
+    """模板清单。过滤软删行——cmd_import_template 有 del_flag（@TableLogic 语义），
+    不过滤会把已删除模板继续吐给「新建导入任务」下拉（历史自检/调试残留会污染演示）。"""
+    t = table("cmd_import_template")
     rows = (await conn.execute(
-        select(table("cmd_import_template"))
-        .order_by(table("cmd_import_template").c.id))).mappings().all()
+        select(t).where(t.c.del_flag == "0").order_by(t.c.id))).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -139,6 +141,17 @@ async def get_template_by_id(conn, template_id: int) -> Optional[dict]:
         table("cmd_import_template").select()
         .where(table("cmd_import_template").c.id == template_id))).mappings().first()
     return dict(row) if row else None
+
+
+async def insert_template(conn, vals: dict) -> dict:
+    return await dynamic_insert(conn, table("cmd_import_template"), vals)
+
+
+async def update_template(conn, template_id: int, patch: dict) -> None:
+    if patch:
+        await conn.execute(table("cmd_import_template").update()
+                           .where(table("cmd_import_template").c.id == template_id)
+                           .values(**patch))
 
 
 async def count_mappings(conn, template_code: str) -> int:
@@ -202,6 +215,18 @@ async def find_by_legal_name(conn, legal_name: str) -> Optional[dict]:
             table("cmd_customer").c.legal_name == legal_name,
             table("cmd_customer").c.del_flag == "0").limit(1))).mappings().first()
     return dict(row) if row else None
+
+
+async def list_active_for_match(conn) -> List[dict]:
+    """存量主档（active）匹配候选集：提供信用代码 / 名称 / 经营地址，
+    供按「主依据 = 信用代码 + 经营地址，名称为辅助线索」的口径打分。"""
+    t = table("cmd_customer")
+    rows = (await conn.execute(
+        select(t.c.one_id, t.c.legal_name, t.c.credit_code, t.c.address, t.c.bu_scope)
+        .where(t.c.status == "active")
+        .where(t.c.del_flag == "0")
+    )).mappings().all()
+    return [dict(r) for r in rows]
 
 
 async def find_active_by_one_id(conn, one_id: str) -> Optional[dict]:

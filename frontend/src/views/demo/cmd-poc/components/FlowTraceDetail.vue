@@ -44,7 +44,18 @@
           <span class="ft-progress-text">{{ trace.completedSteps }}/{{ trace.totalSteps }} · {{ trace.progressPercent }}%</span>
         </div>
 
-        <p class="ft-steps-hint">点击已开始（已完成 / 进行中）的步骤，下方会跟着切换到该节点实际发生的内容（字段 / 明细表 / 口径说明）；未开始的节点点击无反应</p>
+        <!-- 退回提示：打回上游时只靠节点颜色容易被误读为「已完成」，这里给文字结论 -->
+        <el-alert
+          v-if="returnInfo"
+          class="ft-return-alert"
+          type="warning"
+          show-icon
+          :closable="false"
+          :title="returnInfo.title"
+          :description="returnInfo.desc"
+        />
+
+        <p class="ft-steps-hint">点击已开始（已完成 / 进行中 / 已退回）的步骤，下方会跟着切换到该节点实际发生的内容（字段 / 明细表 / 口径说明）；未开始的节点点击无反应</p>
         <div class="ft-steps">
           <template v-for="(step, i) in trace.steps" :key="step.nodeCode">
             <div
@@ -223,7 +234,7 @@ const onViewSwimlane = () => {
  */
 const activeNode = ref('');
 
-/** 步骤点击：只有已开始（已完成 / 进行中 / 已终止）的节点有明细可看，未开始（PENDING）点击不切换 */
+/** 步骤点击：已开始（已完成 / 进行中 / 已退回 / 已终止）的节点有明细可看，未开始（PENDING）点击不切换 */
 const onStepClick = (step: FlowTraceStepVO) => {
   if (step.status === 'PENDING') return;
   activeNode.value = step.nodeCode;
@@ -271,12 +282,14 @@ const toneOf = (tone?: string): TagType => (TONE_SET.includes(tone ?? '') ? (ton
 const STEP_STATUS_TEXT: Record<string, string> = {
   COMPLETED: '已完成',
   CURRENT: '进行中',
+  RETURNED: '已退回',
   PENDING: '待执行',
   TERMINATED: '已终止'
 };
 const STEP_STATUS_TAG: Record<string, TagType> = {
   COMPLETED: 'success',
-  CURRENT: 'warning',
+  CURRENT: 'primary',
+  RETURNED: 'warning',
   PENDING: 'info',
   TERMINATED: 'danger'
 };
@@ -317,9 +330,31 @@ const iconFor = (step: FlowTraceStepVO) => {
 const bandText = (step: FlowTraceStepVO) => {
   if (step.status === 'COMPLETED') return 'complete';
   if (step.status === 'CURRENT') return 'to do';
+  if (step.status === 'RETURNED') return '已退回';
   if (step.status === 'TERMINATED') return 'stopped';
   return 'pending';
 };
+
+/**
+ * 退回提示：本单被打回上游时，步骤条里会出现 RETURNED 节点，
+ * 只靠颜色容易被误读成「已完成」，这里给一句明确的文字结论。
+ */
+const returnInfo = computed(() => {
+  const t = trace.value;
+  if (!t) return null;
+  const steps = t.steps ?? [];
+  const backNodes = steps.filter(s => s.status === 'RETURNED');
+  const isBack = t.returned === true || (t.status ?? '').toUpperCase() === 'RETURNED' || backNodes.length > 0;
+  if (!isBack) return null;
+  // 退回发起节点 = 已退回节点里最靠后的那一个（流程是从它打回的）
+  const src = backNodes.length ? backNodes[backNodes.length - 1] : undefined;
+  const target = steps.find(s => s.status === 'CURRENT');
+  return {
+    title: `本单已被退回${src ? `（由「${src.nodeName}」退回）` : ''}，当前停留：「${target?.nodeName ?? t.currentNodeName ?? '—'}」`,
+    desc: '退回会把下游节点的完成度作废：这些节点标记为「已退回」（琥珀色，需重做）；'
+      + '当前节点之前真正走完的节点仍为「已完成」，退回目标节点为「进行中」。'
+  };
+});
 
 const load = async () => {
   if (!props.taskNo) {
@@ -423,6 +458,22 @@ watch(() => [props.taskNo, props.detailType], load, { flush: 'post' });
     font-size: 12px;
     color: var(--el-text-color-secondary);
     white-space: nowrap;
+  }
+}
+
+/* 退回提示条：紧贴进度条，先给结论再看节点 */
+.ft-return-alert {
+  margin-top: 8px;
+
+  :deep(.el-alert__title) {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  :deep(.el-alert__description) {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.5;
   }
 }
 
@@ -545,6 +596,27 @@ watch(() => [props.taskNo, props.detailType], load, { flush: 'post' });
     .ft-node-name {
       color: var(--el-color-primary);
       font-weight: 600;
+    }
+
+    /* 进行中＝蓝色（与泳道图一致）；琥珀色留给「已退回」 */
+    .ft-band {
+      background: var(--el-color-primary);
+    }
+  }
+
+  /*
+    已退回：走过又被退回作废，需重做。
+    与「已终止」（终态、浅红）区分：琥珀色实心状态条 + 琥珀描边节点。
+  */
+  &.is-returned {
+    .ft-icon,
+    .ft-node-name {
+      color: var(--el-color-warning);
+    }
+
+    .ft-node {
+      border-color: var(--el-color-warning);
+      background: var(--el-color-warning-light-9);
     }
 
     .ft-band {

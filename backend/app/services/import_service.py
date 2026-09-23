@@ -24,6 +24,7 @@ from ..core.db import table
 from ..core.query import dynamic_insert
 from ..repositories import import_repo
 from ..repositories.import_repo import now
+from .duplicate import load_match_rule, score_candidate
 
 # ---- 常量（与 Java CmdImportServiceImpl 逐字对齐）----
 STATUS_WAIT_REVIEW = "WAIT_REVIEW"
@@ -33,7 +34,7 @@ STATUS_COMPLETED = "COMPLETED"
 ROW_SUCCESS, ROW_FAILED, ROW_GOVERNANCE, ROW_SKIPPED = "SUCCESS", "FAILED", "GOVERNANCE", "SKIPPED"
 HANDLING_FIX, HANDLING_GOVERNANCE, HANDLING_IGNORE = "FIX", "GOVERNANCE", "IGNORE"
 RESULT_EXACT, RESULT_SUSPECTED, RESULT_NEW, RESULT_INVALID = "EXACT", "SUSPECTED", "NEW", "INVALID"
-FIELD_LEGAL_NAME, FIELD_CREDIT_CODE = "legal_name", "credit_code"
+FIELD_LEGAL_NAME, FIELD_CREDIT_CODE, FIELD_ADDRESS = "legal_name", "credit_code", "address"
 CORE_FIELDS = {FIELD_LEGAL_NAME, FIELD_CREDIT_CODE}
 CREDIT_CODE_PATTERN = re.compile(r"^[0-9A-Z]{18}$")
 
@@ -57,6 +58,11 @@ def norm(v: Optional[str]) -> str:
     return re.sub(r"\s+", "", (v or "")).upper()
 
 
+def norm_addr_key(legal_name: Optional[str], address: Optional[str]) -> str:
+    """批次内「名称 + 经营地址」去重键：主依据之一 + 名称，符合设计为地址作为主依据的口径。"""
+    return norm(legal_name) + "|" + norm(address)
+
+
 def resolve_job_status(total: int, exact: int, suspected: int, created: int,
                        invalid: int) -> str:
     """全部 Invalid→Failed；部分 Invalid→部分成功；有疑似/新建→待复核；否则完成。"""
@@ -75,6 +81,14 @@ def dq_score_of(errors: List[str], result_type: str) -> float:
     if result_type == RESULT_INVALID:
         score = max(score, 40)
     return float(score)
+
+
+def dq_grade_of(score) -> Optional[str]:
+    """分值 → 质量等级（≥90 A / ≥75 B / ≥60 C / <60 D），与单条申请口径一致。"""
+    if score is None:
+        return None
+    value = float(score)
+    return "A" if value >= 90 else "B" if value >= 75 else "C" if value >= 60 else "D"
 
 
 def _nz(v) -> int:
@@ -149,10 +163,39 @@ async def create_job_registration(conn, *, file_name: str, body: dict) -> str:
 # ============================ 模板 / 映射 ============================
 
 
+# 内置模板兜底（BUG-PY-01）：cmd_import_template 是平台配置数据，
+# 部署环境若未跑种子脚本就会整表为空——下拉里「无数据」但又是必填，
+# 批量导入功能被彻底卡死。这里给一份与 Java 种子同构的最小模板集，
+# 保证任何环境下「新建导入任务」都能选出模板继续演示。
+BUILTIN_TEMPLATES: List[dict] = [
+    {
+        "id": 1001, "template_code": "TPL_DOOR_MAINSTREAM",
+        "template_name": "Door_Mainstream_Lens", "scene": "DOOR",
+        "bu_scope": "Mainstream", "customer_type": "Door", "product_line": "Lens",
+        "source_system": "DMS+", "version_no": "v1.3", "status": "0",
+        "field_count": 12, "remark": "Mainstream 门店导入模板（已发布）",
+    },
+    {
+        "id": 1002, "template_code": "TPL_DOOR_HIGHEND",
+        "template_name": "Door_HighEnd_Frame", "scene": "DOOR",
+        "bu_scope": "High End", "customer_type": "Door", "product_line": "Frame",
+        "source_system": "Cloud", "version_no": "v1.2", "status": "1",
+        "field_count": 12, "remark": "High End 门店导入模板（草稿）",
+    },
+]
+
+
 async def list_templates(conn) -> List[dict]:
-    """模板清单（status 0→Published / 其余→Draft，含字段数）。"""
+    """模板清单（status 0→Published / 其余→Draft，含字段数）。
+
+    表为空时回退到内置模板集（BUG-PY-01）：下拉不可为空，否则必填项无从选择、
+    批量导入整条链路不可用。DB 有数据时以 DB 为准，不覆盖平台配置。
+    """
+    rows = await import_repo.list_templates(conn)
+    if not rows:
+        return [dict(t) for t in BUILTIN_TEMPLATES]
     out = []
-    for tpl in await import_repo.list_templates(conn):
+    for tpl in rows:
         field_count = await import_repo.count_mappings(conn, tpl["template_code"])
         out.append({
             "id": tpl["id"], "templateCode": tpl["template_code"],
@@ -164,6 +207,167 @@ async def list_templates(conn) -> List[dict]:
             "fieldCount": field_count, "remark": tpl.get("remark"),
         })
     return out
+
+
+# 模板业务上下文字典：与「下载模板」弹窗的 4 个下拉、新建导入任务弹窗同口径
+TEMPLATE_SCENES = ("DOOR", "PAYER")
+TEMPLATE_BUS = ("High End", "Mainstream")
+TEMPLATE_CUSTOMER_TYPES = ("Door", "Payer", "A1", "A2", "A3")
+TEMPLATE_PRODUCT_LINES = ("Lens", "Frame")
+TEMPLATE_SOURCE_SYSTEMS = ("DMS+", "Cloud")
+TEMPLATE_STATUS_CODE = {"Published": "0", "Draft": "1"}
+
+
+def gen_template_code(scene: str, bu: str, product_line: str) -> str:
+    """按业务上下文生成模板编码（如 DOOR + High End + Frame → TPL_DOOR_HIGHEND_FRAME）。"""
+    parts = [scene, bu, product_line]
+    return "_".join(["TPL"] + [re.sub(r"[^0-9A-Za-z]+", "", p).upper() for p in parts if p])
+
+
+async def _unique_template_code(conn, base: str) -> str:
+    """模板编码去重：已存在时依次追加 _2 / _3 …"""
+    code, i = base, 1
+    while await import_repo.get_template_by_code(conn, code) is not None:
+        i += 1
+        code = f"{base}_{i}"
+    return code
+
+
+# 主键字段默认映射：源列名与内置模板（TPL_DOOR_MAINSTREAM / TPL_DOOR_HIGHEND）保持一致，
+# 新建模板即自动带上——它们是发布校验的前置条件，缺了必然发不出去。
+CORE_MAPPING_SEED = (
+    ("CustomerName", FIELD_LEGAL_NAME, "客户法定名称", "STRING"),
+    ("CreditCode", FIELD_CREDIT_CODE, "统一社会信用代码", "STRING"),
+)
+
+
+async def _seed_core_mappings(conn, template_code: str) -> int:
+    """为新模板补齐主键字段映射（幂等：已存在同字段或同源列则跳过）。返回写入行数。"""
+    template = await import_repo.get_template_by_code(conn, template_code)
+    if template is None:
+        return 0
+    existing = await import_repo.list_mappings(conn, template_code)
+    codes = {(m.get("field_code") or "").lower() for m in existing}
+    columns = {(m.get("column_name") or "").lower() for m in existing}
+    idx = await import_repo.max_column_index(conn, template_code)
+    added = 0
+    for column_name, field_code, field_name, data_type in CORE_MAPPING_SEED:
+        if field_code.lower() in codes or column_name.lower() in columns:
+            continue
+        idx += 1
+        await import_repo.insert_mapping(conn, {
+            "template_id": template["id"], "template_code": template_code,
+            "column_index": idx, "order_num": idx, "status": "0",
+            "is_required": "Y", "column_name": column_name, "field_code": field_code,
+            "field_name": field_name, "data_type": data_type, "create_time": now(),
+        })
+        added += 1
+    return added
+
+
+async def fill_core_mappings(conn, template_code: str) -> str:
+    """一键补齐主键字段映射（客户法定名称 / 统一社会信用代码）。
+
+    历史模板（或管理员手工删过列又被拦下的场景）可能缺主键字段，
+    发布校验会直接拒绝；这里给一个显式入口，不用手输字段编码。
+    """
+    code = (template_code or "").strip()
+    if not code:
+        raise ImportBizError("模板编码不能为空")
+    if await import_repo.get_template_by_code(conn, code) is None:
+        raise ImportBizError(f"导入模板不存在：{code}")
+    added = await _seed_core_mappings(conn, code)
+    if not added:
+        return "主键字段（客户法定名称 / 统一社会信用代码）已存在，无需补齐"
+    return f"已补齐 {added} 个主键字段（客户法定名称 / 统一社会信用代码），现在可以发布了"
+
+
+async def save_template(conn, body: dict) -> str:
+    """新建 / 编辑导入模板（平台管理 › 导入Template）。
+
+    业务上下文（场景 / BU / 客户类型 / 产品线 / 来源系统）是模板的定位维度——
+    全新部署时管理员可直接在 UI 建出模板，无需开发预置 SQL。
+    模板编码留空时按业务上下文自动生成；新建后的模板为 Draft，配置字段映射后发布。
+    新建时自动带上两个主键字段（客户法定名称 / 统一社会信用代码）——它们是发布校验的
+    前置条件，先给上就不会出现「配完列却发不出去」。
+    """
+    tpl_id = body.get("id") or body.get("templateId")
+    template_name = (body.get("templateName") or body.get("template_name") or "").strip()
+    scene = (body.get("scene") or "").strip() or TEMPLATE_SCENES[0]
+    bu_scope = (body.get("buScope") or body.get("bu_scope") or "").strip() or None
+    customer_type = (body.get("customerType") or body.get("customer_type") or "").strip() or None
+    product_line = (body.get("productLine") or body.get("product_line") or "").strip() or None
+    source_system = (body.get("sourceSystem") or body.get("source_system") or "").strip() or None
+    version_no = (body.get("versionNo") or body.get("version_no") or "").strip() or "v1"
+    remark = body.get("remark")
+
+    if not template_name:
+        raise ImportBizError("模板名称不能为空")
+
+    if tpl_id:  # ---- 编辑：只改业务上下文与版本，模板编码不可变（映射按编码关联）----
+        template = await import_repo.get_template_by_id(conn, int(tpl_id))
+        if template is None:
+            raise ImportBizError(f"导入模板不存在：{tpl_id}")
+        await import_repo.update_template(conn, int(tpl_id), {
+            "template_name": template_name, "scene": scene, "bu_scope": bu_scope,
+            "customer_type": customer_type, "product_line": product_line,
+            "source_system": source_system, "version_no": version_no,
+            "remark": remark, "update_time": now(),
+        })
+        return f"已更新导入模板「{template_name}」"
+
+    # ---- 新建 ----
+    template_code = (body.get("templateCode") or body.get("template_code") or "").strip()
+    if not template_code:
+        template_code = await _unique_template_code(
+            conn, gen_template_code(scene, bu_scope or "", product_line or ""))
+    elif await import_repo.get_template_by_code(conn, template_code) is not None:
+        raise ImportBizError(f"模板编码 [{template_code}] 已存在")
+
+    await import_repo.insert_template(conn, {
+        "template_code": template_code, "template_name": template_name,
+        "scene": scene, "bu_scope": bu_scope, "customer_type": customer_type,
+        "product_line": product_line, "source_system": source_system,
+        "version_no": version_no, "file_type": "XLSX", "header_row": 1,
+        "data_start_row": 2, "sheet_name": "Template", "status": TEMPLATE_STATUS_CODE["Draft"],
+        "remark": remark, "create_time": now(),
+    })
+    seeded = await _seed_core_mappings(conn, template_code)
+    return (f"已新建导入模板「{template_name}」（{template_code}，Draft）"
+            f"——已自动带上 {seeded} 个主键字段，补充其他上传列后即可发布")
+
+
+async def set_template_status(conn, template_code: str, status: str) -> str:
+    """发布 / 停用导入模板。
+
+    发布前必须已配置字段映射，且包含主键字段（客户法定名称 legal_name /
+    统一社会信用代码 credit_code）——它们是上传预检与存量查重的锚点，
+    缺失会导致批量导入无法正确分流。
+    """
+    code = (template_code or "").strip()
+    if status not in TEMPLATE_STATUS_CODE:
+        raise ImportBizError(f"不支持的模板状态：{status}")
+    template = await import_repo.get_template_by_code(conn, code)
+    if template is None:
+        raise ImportBizError(f"导入模板不存在：{code}")
+
+    if status == "Published":
+        mappings = await import_repo.list_mappings(conn, code)
+        if not mappings:
+            raise ImportBizError("模板未配置字段映射，无法发布")
+        codes = {m["field_code"] for m in mappings}
+        if not CORE_FIELDS.issubset(codes):
+            missing = "、".join("客户法定名称 legal_name" if f == FIELD_LEGAL_NAME
+                                else "统一社会信用代码 credit_code"
+                                for f in sorted(CORE_FIELDS - codes))
+            raise ImportBizError(
+                f"模板缺少主键字段映射（{missing}），无法发布"
+                "——点上方「一键补齐主键字段」可自动补上")
+
+    await import_repo.update_template(conn, template["id"], {
+        "status": TEMPLATE_STATUS_CODE[status], "update_time": now(),
+    })
+    return f"模板「{template['template_name']}」已{'发布' if status == 'Published' else '停用'}"
 
 
 async def list_mappings(conn, template_code: Optional[str]) -> List[dict]:
@@ -429,21 +633,30 @@ async def classify_rows(conn, job: dict, mappings: List[dict],
                         rows: List[Dict[str, str]]) -> Tuple[int, int, int, int]:
     """行级处理：DQ 校验 + 批次内去重 + 存量匹配 → 四类分流（Java classifyRows）。
 
-    优先级：Invalid > 批次内重复(Suspected) > 存量 Exact > 名称疑似(Suspected) > New。
+    匹配口径对齐总设计 V6.1：主依据 = 统一社会信用代码 + 经营地址，客户名称仅作辅助线索；
+    阈值与标准化策略取 match_rule（scene=IMPORT）。
+    优先级：Invalid > 批次内重复(Suspected) > 存量 Exact > 存量 Suspected > New。
     """
     name_col = next((m.get("column_name") or m["field_code"] for m in mappings
                      if m["field_code"] == FIELD_LEGAL_NAME), None)
     code_col = next((m.get("column_name") or m["field_code"] for m in mappings
                      if m["field_code"] == FIELD_CREDIT_CODE), None)
+    addr_col = next((m.get("column_name") or m["field_code"] for m in mappings
+                     if m["field_code"] == FIELD_ADDRESS), None)
+    rule = await load_match_rule(conn, "IMPORT")
+    ops = rule["ops"]
+    masters = await import_repo.list_active_for_match(conn)
     data_start_row = template_start_row(job)
     batch_codes: Dict[str, int] = {}
     batch_names: Dict[str, int] = {}
+    batch_name_addr: Dict[str, int] = {}
     exact = suspected = created = invalid = 0
 
     for idx, data in enumerate(rows):
         row_no = data_start_row + idx
         legal_name = _cell_str(data.get(name_col)) if name_col else None
         credit_code = _cell_str(data.get(code_col)) if code_col else None
+        address = _cell_str(data.get(addr_col)) if addr_col else None
 
         # 1) 行级 DQ：必填列缺失 + 信用代码格式
         errors: List[str] = []
@@ -462,12 +675,13 @@ async def classify_rows(conn, job: dict, mappings: List[dict],
             result_type, row_status, handling = RESULT_INVALID, ROW_FAILED, HANDLING_FIX
         elif credit_code and norm(credit_code) in batch_codes:
             result_type, row_status, handling = RESULT_SUSPECTED, ROW_GOVERNANCE, HANDLING_GOVERNANCE
-            match_state = RESULT_SUSPECTED
+            match_state, match_score = RESULT_SUSPECTED, 100.0
             errors.append(f"批次内与第 {batch_codes[norm(credit_code)]} 行信用代码重复")
-        elif legal_name and norm(legal_name) in batch_names:
+        elif legal_name and norm_addr_key(legal_name, address) in batch_name_addr:
+            # 名称 + 经营地址一致（主依据之一命中）→ 疑似重复
             result_type, row_status, handling = RESULT_SUSPECTED, ROW_GOVERNANCE, HANDLING_GOVERNANCE
-            match_state = RESULT_SUSPECTED
-            errors.append(f"批次内与第 {batch_names[norm(legal_name)]} 行客户名称重复")
+            match_state, match_score = RESULT_SUSPECTED, 90.0
+            errors.append(f"批次内与第 {batch_name_addr[norm_addr_key(legal_name, address)]} 行客户名称与经营地址重复")
         else:
             exact_hit = (await import_repo.find_active_by_credit_code(conn, credit_code)
                          if credit_code else None)
@@ -475,21 +689,44 @@ async def classify_rows(conn, job: dict, mappings: List[dict],
                 result_type, row_status = RESULT_EXACT, ROW_SUCCESS
                 match_state, match_one_id, match_score = RESULT_EXACT, exact_hit["one_id"], 100.0
             else:
-                name_hit = (await import_repo.find_by_legal_name(conn, legal_name)
-                            if legal_name else None)
-                if name_hit:
-                    result_type, row_status = RESULT_SUSPECTED, ROW_GOVERNANCE
-                    handling, match_state = HANDLING_GOVERNANCE, RESULT_SUSPECTED
-                    match_one_id, match_score = name_hit["one_id"], 75.0
-                    errors.append(f"与存量主档名称相同（候选 {name_hit['one_id']}），需治理确认")
+                # 存量打分：信用代码 + 经营地址为主依据，客户名称为辅助线索
+                best: Optional[Tuple[float, dict]] = None
+                for m in masters:
+                    score, _contrib, _basis = score_candidate(
+                        {"credit_code": credit_code, "legal_name": legal_name, "address": address},
+                        {"credit_code": m.get("credit_code"), "legal_name": m.get("legal_name"),
+                         "address": m.get("address")},
+                        ops, rule["suspect"],
+                    )
+                    if best is None or score > best[0]:
+                        best = (score, m)
+                # 硬约束：双方信用代码都有值却不相等 → 不同法人主体，最多判疑似
+                credit_conflict = bool(credit_code and best and best[1].get("credit_code")
+                                       and norm(credit_code) != norm(best[1]["credit_code"]))
+                if best and best[0] >= rule["exact"] and not credit_conflict:
+                    result_type, row_status = RESULT_EXACT, ROW_SUCCESS
+                    match_state, match_one_id, match_score = RESULT_EXACT, best[1]["one_id"], best[0]
+                elif best and best[0] >= rule["suspect"]:
+                    result_type, row_status, handling = RESULT_SUSPECTED, ROW_GOVERNANCE, HANDLING_GOVERNANCE
+                    match_state, match_one_id, match_score = RESULT_SUSPECTED, best[1]["one_id"], best[0]
+                    errors.append(
+                        f"与存量主档 {best[1]['one_id']} 相似度 {best[0]:.0f}"
+                        f"（主依据：信用代码 / 经营地址；名称辅助），需治理确认")
                 else:
                     result_type, row_status = RESULT_NEW, ROW_SUCCESS
                     match_state = RESULT_NEW
+                    match_score = best[0] if best else 0.0
+                    if legal_name and norm(legal_name) in batch_names:
+                        # 名称仅作辅助线索：同名但信用代码与经营地址均不同 → 不判重复，仅提示
+                        errors.append(
+                            f"批次内与第 {batch_names[norm(legal_name)]} 行客户名称相同，"
+                            "但信用代码 / 经营地址不同（名称仅作辅助线索），按新客户处理")
 
         if credit_code:
             batch_codes.setdefault(norm(credit_code), row_no)
         if legal_name:
             batch_names.setdefault(norm(legal_name), row_no)
+            batch_name_addr.setdefault(norm_addr_key(legal_name, address), row_no)
 
         await import_repo.insert_row(conn, {
             "job_id": job["id"], "job_code": job["job_code"], "row_no": row_no,
@@ -634,20 +871,46 @@ async def submit_import_approval(conn, job: dict, outcome: Tuple[int, int, int, 
     scores = [float(r["dq_score"]) for r in rows if r.get("dq_score") is not None]
     avg_dq = round(sum(scores) / len(scores), 1) if scores else 0.0
     task_no = await gen_code(conn, "AP-", 4, "APPROVAL")
+
+    # 跨BU 判定（BUG-PY-06）：批次里只要有行的信用代码在**别的 BU**已有主档/在途申请，
+    # 该批次确认就属于跨BU重复场景，必须带 cross_bu_flag=Y 并走 GC 决策，
+    # 否则 BU 一次「批量确认」就把跨BU重复落成同码独立主档，GC 永远收不到待办。
+    # 此前这里写死 "N"，是跨BU场景在导入链路上失守的直接原因。
+    from .customer import cross_bu_conflicts
+    cross_rows: list[dict] = []
+    seen_codes: set[str] = set()
+    for r in rows:
+        code = (r.get("credit_code") or "").strip()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        conflicts = await cross_bu_conflicts(conn, code, job.get("bu_scope"))
+        if conflicts:
+            cross_rows.append({"rowNo": r.get("row_no"), "legalName": r.get("legal_name"),
+                               "creditCode": code, "conflicts": conflicts})
+
     evidence = {
         "批次均分": f"{avg_dq} 分（{len(rows)} 行）",
         "分流结论": f"Exact {exact} / Suspected {suspected} / New {created} / Invalid {invalid}",
         "总行数": job.get("total_count") or len(rows),
     }
+    if cross_rows:
+        evidence["跨BU"] = "是"
+        evidence["跨BU命中记录"] = "；".join(
+            f"第 {c['rowNo']} 行 {c.get('legalName') or ''}（{c['creditCode']}）→ "
+            + "、".join(f"{p['one_id']}·{p.get('bu_scope') or ''}" for p in c["conflicts"])
+            for c in cross_rows)
+        evidence["处置要求"] = "批次内存在与其它 BU 同信用代码的记录，须由 GC Scope 做合并/新建决策后再发布"
     task_vals = await dynamic_insert(conn, table("cmd_approval_task"), dict(
         task_no=task_no, task_category="APPROVAL", biz_type="IMPORT", biz_id=job["job_code"],
         biz_title=f"批量导入确认：{job.get('file_name')}", scene_code="IMPORT_BATCH",
         applicant_name=operator, bu_scope=job.get("bu_scope"),
         scope="BU", current_node_code="BU_REVIEW", current_node_name="BU Scope 批量确认",
         assignee_name="BU Steward", assignee_role="BU_STEWARD", status="PENDING",
-        risk_level="High" if invalid > 0 else "Medium",
-        duplicate_state="SUSPECTED" if suspected > 0 else "NEW",
-        cross_bu_flag="N", submit_time=now(), sla_due=now(), sla_state="NORMAL",
+        risk_level="High" if (invalid > 0 or cross_rows) else "Medium",
+        duplicate_state="SUSPECTED" if (suspected > 0 or cross_rows) else "NEW",
+        cross_bu_flag="Y" if cross_rows else "N",
+        submit_time=now(), sla_due=now(), sla_state="NORMAL",
         dq_score=avg_dq, evidence_json=evidence, remark="批量导入 New 行待确认",
         create_time=now(), update_time=now(), create_by=0))
     await log_action(conn, task_id=task_vals.get("id"), task_no=task_no, one_id=None,
@@ -691,19 +954,47 @@ async def on_approval(conn, job_code: str, action_type: str, operator: str) -> N
 
 
 async def publish_new_rows(conn, job: dict) -> int:
-    """审批通过：为全部 New 行生成客户主档（One ID + active），回写行 One ID。"""
+    """审批通过：为全部 New 行生成客户主档（One ID + active），回写行 One ID。
+
+    两条硬约束（对应 BUG-PY-06 / BUG-PY-04）：
+    1) 同一统一社会信用代码**绝不新建第二条黄金记录**——若库中已有同码 Active 主档，
+       本行改为「关联已有」而不是再落一条 Active（否则两个 BU 各自批准就会产出同码双主档，
+       直接破坏总设计「One ID 稳定」）。跨BU 命中的关联必须由 GC 决策，这里只登记待决策。
+    2) 名称等必填项为空的行不发布（此前用「未命名导入客户 N」兜底，等于把脏数据写进主档）。
+    """
     from ..services import sequence as seq
     rows = [r for r in await import_repo.list_rows_by_job(conn, job["id"])
             if r.get("result_type") == RESULT_NEW]
     count = 0
     for row in rows:
+        if not str(row.get("legal_name") or "").strip():
+            await import_repo.update_row(conn, row["id"], {
+                "result_type": RESULT_INVALID, "row_status": ROW_FAILED,
+                "error_count": 1, "error_summary": "客户名称不能为空，已阻断发布",
+                "update_time": now()})
+            continue
+        code = (row.get("credit_code") or "").strip()
+        existing = await import_repo.find_active_by_credit_code(conn, code) if code else None
+        if existing is not None:
+            # 同码已有主档：不新建，改关联；跨BU 时保留待 GC 决策的痕迹
+            cross = (existing.get("bu_scope") or "") != (job.get("bu_scope") or "")
+            await import_repo.update_row(conn, row["id"], {
+                "result_type": RESULT_EXACT, "row_status": ROW_SUCCESS,
+                "one_id": existing["one_id"], "match_state": RESULT_EXACT,
+                "handling": (f"跨BU同码：已关联已有主档 {existing['one_id']}（需 GC 复核）"
+                             if cross else f"已关联已有主档 {existing['one_id']}"),
+                "error_count": 0, "update_time": now()})
+            continue
         one_id = await seq.gen_one_id(conn)
+        _row_dq = row.get("dq_score")
         await dynamic_insert(conn, table("cmd_customer"), dict(
             one_id=one_id,
-            legal_name=row.get("legal_name") or f"未命名导入客户 {row['row_no']}",
+            legal_name=row.get("legal_name"),
             credit_code=row.get("credit_code"), bu_scope=row.get("bu_scope"),
             country="中国", status="active", source_system="IMPORT",
-            source_id=job["job_code"], dq_score=row.get("dq_score"),
+            source_id=job["job_code"], dq_score=_row_dq,
+            # 等级与分值同源落库，避免「有分无级」导致详情页质量等级空白
+            dq_grade=dq_grade_of(_row_dq),
             match_state=RESULT_NEW, duplicate_flag="N",
             remark=f"批量导入生成：{job['job_code']} 第 {row['row_no']} 行",
             create_time=now(), update_time=now()))

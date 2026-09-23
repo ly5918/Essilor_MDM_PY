@@ -14,6 +14,8 @@ export interface PocPageMeta {
 export const PAGE_META: Record<PageId, PocPageMeta> = {
   dash: { sub: '根据角色与Scope动态显示' },
   customers: { title: 'Customer Management', sub: '客户创建、查看、OCR识别与数据权限控制' },
+  /** 「客户管理」二级菜单的第二个子页：与主档视图分成两个页面，而不是同页 tab 切换 */
+  custapps: { title: 'Customer Applications', sub: '已提交、尚未审批完成的客户申请，跟进当前节点与流程' },
   batch: { title: '批量导入中心', sub: '预检、DQ、匹配、治理、部分成功' },
   gov: { title: '治理任务', sub: 'Suspect与Review记录处理' },
   hier: { title: '客户层级工作台', sub: '搜索、定位、浏览、编辑关系与增加子节点' },

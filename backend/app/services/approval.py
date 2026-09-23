@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -19,6 +20,27 @@ from .customer import publish_customer
 # ---- 常量（对齐 Java CmdConstants） ----------------------------------------
 _FINAL_STATUSES = {"APPROVED", "REJECTED", "COMPLETED", "CANCELLED"}
 _MATCH_EXACT, _MATCH_SUSPECTED, _MATCH_NEW = "EXACT", "SUSPECTED", "NEW"
+
+# 任务状态 → 中文（审批详情头部 / 列表「状态」列）
+_STATUS_TEXT = {
+    "DRAFT": "草稿",
+    "PENDING": "待审批",
+    "APPROVED": "已批准",
+    "COMPLETED": "已办结",
+    "REJECTED": "已拒绝",
+    "RETURNED": "已退回",
+    "ESCALATED": "已升级",
+    "CANCELLED": "已取消",
+}
+
+
+def _status_text(status: str) -> str:
+    return _STATUS_TEXT.get((status or "").upper(), status or "-")
+
+
+def _fmt_dt(value) -> str:
+    """datetime → 展示串；空值返回空串（前端据此决定是否展示）。"""
+    return value.strftime("%Y-%m-%d %H:%M") if isinstance(value, datetime) else ""
 
 
 def _resolve_sla_text(sla_state: str) -> str:
@@ -39,7 +61,9 @@ def _build_decisions(task: dict) -> list[str]:
     if dq is not None and float(dq) < 60:
         decisions.append("DQ 低于 60：建议退回补充材料")
     match = (task.get("duplicate_state") or "").upper()
-    if _MATCH_SUSPECTED in match:
+    if _is_in_flight_duplicate(task):
+        decisions.append("重复发单：同一信用代码存在尚未审批完成的在途申请，建议撤回本单或确认是否同一主体")
+    elif _MATCH_SUSPECTED in match:
         decisions.append("疑似重复：需人工比对后决定关联已有或新建")
     elif _MATCH_EXACT in match:
         decisions.append("已命中存量：批准后关联已有 One ID")
@@ -52,10 +76,61 @@ def _build_decisions(task: dict) -> list[str]:
     return decisions
 
 
+def _evidence_dict(task: dict) -> dict:
+    """evidence_json 兼容两种形态：dict（JSON 列）与 str。"""
+    ev = task.get("evidence_json")
+    if isinstance(ev, dict):
+        return ev
+    if isinstance(ev, str) and ev.strip().startswith("{"):
+        try:
+            return json.loads(ev)
+        except Exception:
+            return {}
+    return {}
+
+
+def _is_in_flight_duplicate(task: dict) -> bool:
+    """命中的是「尚未审批完成的在途申请」而非已发布主档。
+
+    两者处置动作不同：在途申请还不是主档，「关联已有主档 / 确认合并」的语义不成立，
+    正确动作是撤回本单或确认为不同主体后继续。
+    """
+    ev = _evidence_dict(task)
+    return (str(ev.get("在途申请") or "").strip() == "是"
+            or "在途" in str(ev.get("命中来源") or ""))
+
+
 def _is_duplicate_link_approval(task: dict) -> bool:
-    """单条创建命中存量（EXACT/SUSPECTED 且证据含候选 One ID）→ 走合并决策按钮组。"""
+    """单条创建命中**已发布主档**（EXACT/SUSPECTED 且证据含候选 One ID）→ 走合并决策按钮组。"""
+    if _is_in_flight_duplicate(task):
+        return False
     return (task.get("duplicate_state") in (_MATCH_EXACT, _MATCH_SUSPECTED)
             and "候选One ID" in (task.get("evidence_json") or ""))
+
+
+# BU Scope 对**跨BU重复**不得执行的定案动作（总设计「故事一」：
+# 单条创建与跨BU识别 = Business User 创建 → BU 初审 → GC 决策 → 关联已有 One ID 并发布）。
+# 这里的护栏是服务端的最后一道闸：前端按钮组已经收敛，但接口仍可能被直接调用
+# （脚本 / 旧页面缓存 / 手工 curl），必须在落库前拦住。
+_CROSS_BU_BU_FORBIDDEN = {"approve", "merge", "exclude", "create_new"}
+
+
+def _cross_bu_needs_gc(task: dict) -> bool:
+    """该任务是否为「跨BU重复」，因而必须由 GC Scope 定案。"""
+    if (task.get("cross_bu_flag") or "N") != "Y":
+        return False
+    if (task.get("scope") or "").upper() == "GC":
+        return False
+    return _is_duplicate_link_approval(task) or _is_in_flight_duplicate(task)
+
+
+def _guard_cross_bu(task: dict, action: str) -> None:
+    """跨BU重复在 BU Scope 上的定案动作一律拒绝，提示升级 GC。"""
+    if _cross_bu_needs_gc(task) and (action or "").lower() in _CROSS_BU_BU_FORBIDDEN:
+        raise RuntimeError(
+            "该申请命中的是其它 BU 的同信用代码记录（跨BU重复），"
+            "按治理口径须由 GC Scope 做合并/新建决策——请先「升级GC决策」，"
+            "BU 侧不能直接批准或排除该重复")
 
 
 def _approve_label(task: dict) -> str:
@@ -64,6 +139,8 @@ def _approve_label(task: dict) -> str:
         # 变更 / 停用 / 批量导入确认无「新建 vs 合并」语义，统一为「批准」
         return "批准"
     match = (task.get("duplicate_state") or "").upper()
+    if _is_in_flight_duplicate(task):
+        return "确认重复·撤回本单"
     if match == _MATCH_NEW:
         return "批准新建"
     if _MATCH_EXACT in match or _MATCH_SUSPECTED in match:
@@ -85,6 +162,23 @@ def _build_actions(task: dict) -> list[dict]:
         return [act("APPROVE", "确认合并", "primary"),
                 act("REJECT", "拒绝合并", "danger"),
                 act("RETURN", "退回BU", "warning")]
+    if _is_in_flight_duplicate(task):
+        # 命中的是在途申请（对方还不是主档）：处置是「撤回本单 / 确认为不同主体 / 退回修正」，
+        # 不提供「关联已有主档」——合并到一个尚不存在的主档在业务上不成立
+        if gc:
+            return [act("REJECT", "确认重复·撤回本单", "danger"),
+                    act("CREATE_NEW", "确认为不同主体·继续新建", "warning"),
+                    act("RETURN", "退回BU修正信用代码", "info")]
+        if task.get("cross_bu_flag") == "Y":
+            # 跨BU在途重复：BU 无权单方定案（总设计「故事一」：BU初审→GC决策→关联已有并发布）。
+            # 「确认为不同主体·继续新建」会把同码主体在另一个 BU 落成独立 Active 记录，
+            # 直接绕开 GC——因此 BU 侧只保留「升级GC决策 / 撤回本单 / 退回」。
+            return [act("ESCALATE", "升级GC决策", "primary"),
+                    act("REJECT", "确认重复·撤回本单", "danger"),
+                    act("RETURN", "退回补充", "info")]
+        return [act("REJECT", "确认重复·撤回本单", "danger"),
+                act("EXCLUDE", "确认为不同主体·继续新建", "warning"),
+                act("RETURN", "退回补充", "info")]
     if _is_duplicate_link_approval(task):
         if gc:
             # GC Scope 决策：跨BU确认关联已有、创建新主档或退回修复
@@ -92,9 +186,10 @@ def _build_actions(task: dict) -> list[dict]:
                     act("CREATE_NEW", "创建新主档", "success"),
                     act("RETURN", "退回BU修复", "warning")]
         if task.get("cross_bu_flag") == "Y":
-            # BU Scope 初审：跨BU无权直接合并——升级、排除或退回
+            # BU Scope 初审：跨BU无权直接定案——只能升级 GC 或退回补充，
+            # 不给「排除重复·继续新建」（否则会在另一个 BU 落成同码独立主档，
+            # 泳道图上「BU初审 → GC决策」的核心场景直接走不通：BUG-PY-06）
             return [act("ESCALATE", "升级GC决策", "primary"),
-                    act("EXCLUDE", "排除重复", "warning"),
                     act("RETURN", "退回补充", "info")]
         # Same-BU：BU 直接决策
         return [act("MERGE", "确认合并", "primary"),
@@ -126,6 +221,7 @@ async def task_detail(task_no: str) -> Optional[dict]:
         return None
     task = dict(row)
     dq = task.get("dq_score")
+    status = (task.get("status") or "").upper()
     return {
         # 雪花 id 必须以字符串下发：19 位超出 JS Number 安全整数（2^53），
         # JSON number 会被前端解析丢精度（822→800），导致动作打到错误任务
@@ -143,6 +239,15 @@ async def task_detail(task_no: str) -> Optional[dict]:
         "evidence": task.get("evidence_json") or "暂无治理证据",
         "decisions": _build_decisions(task),
         "actions": _build_actions(task),
+        # 状态与办结信息：终态任务 actions 为空（设计如此——已办结不能再次审批），
+        # 前端必须能把「没有按钮」解释清楚，而不是给个空白动作区让人猜。
+        "status": status,
+        "statusText": _status_text(status),
+        "closed": status in _FINAL_STATUSES,
+        "handler": task.get("assignee_name") or "",
+        "submitTime": _fmt_dt(task.get("submit_time")),
+        "finishTime": _fmt_dt(task.get("finish_time")),
+        "opinion": task.get("opinion") or "",
     }
 
 
@@ -181,6 +286,9 @@ async def do_action(task_no: str, action: str, actor: str,
         # COMPLETED，业务回调（如 publish_customer）会二次发布撞唯一键
         if (task.get("status") or "").upper() in _FINAL_STATUSES:
             raise RuntimeError(f"任务已办结（{task.get('status')}），不能重复审批: {task_no}")
+
+        # 跨BU重复护栏（BUG-PY-06）：BU 不得对跨BU重复做定案，必须先升级 GC。
+        _guard_cross_bu(task, action)
 
         await _ensure_flow_started(conn, task)
         result = await complete_current(task_no, action, actor, opinion or "")

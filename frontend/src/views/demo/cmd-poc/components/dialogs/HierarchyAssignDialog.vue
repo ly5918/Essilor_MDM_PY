@@ -12,6 +12,9 @@
       <div class="assign-hint">
         该客户已审批通过、正式成为主数据（Golden Record）。把它挂到某个上级节点之下，
         它才会出现在左侧 A3-A2-A1 层级树里；在此之前它只在本页「待归位主数据」区可见。
+        <br />
+        <b>系统刚上线、层级树为空时</b>：在「目标父节点」里选 <b>★ 设为顶级节点（A3 集团）</b>，
+        先把第一个集团节点立起来，后续客户再逐级挂到它下面。
       </div>
     </el-alert>
 
@@ -24,6 +27,11 @@
           style="width: 100%"
           @change="runCheck"
         >
+          <!-- 系统刚上线（层级树为空）时的根节点入口：客户直接成为顶级 A3 集团 -->
+          <el-option
+            :label="`★ 设为顶级节点（A3 集团）${parentOptions.length ? '' : ' · 当前层级树为空，只能选它'}`"
+            :value="ROOT_OPTION"
+          />
           <el-option
             v-for="item in parentOptions"
             :key="item.oneId"
@@ -31,6 +39,10 @@
             :value="item.oneId"
           />
         </el-select>
+        <div v-if="isRoot" class="assign-tip">
+          该客户将登记为顶级 <b>A3 集团</b>节点（第 1 级，无上级）。后续客户再归位到它下面，
+          依次产生 A2 法人、A1 门店，即可从零搭出 A3-A2-A1 层级树。
+        </div>
       </el-form-item>
 
       <el-form-item label="归位后级别">
@@ -160,6 +172,11 @@ interface ParentOption {
 }
 const parentOptions = ref<ParentOption[]>([]);
 
+/** 「设为顶级节点」哨兵值：不指向任何父节点，提交时按 root=true 走 A3 集团登记 */
+const ROOT_OPTION = '__ROOT__';
+
+const isRoot = computed(() => form.parentId === ROOT_OPTION);
+
 const rules: FormRules<HierarchyAssignForm> = {
   parentId: [{ required: true, message: '请选择目标父节点', trigger: 'change' }],
   changeReason: [{ required: true, message: '请填写变更原因', trigger: 'blur' }]
@@ -196,6 +213,7 @@ const check = ref<HierarchyValidateVO>(emptyCheck());
 
 /** 归位后级别：优先取服务端推导结果，未校验时按父节点深度本地兜底 */
 const derivedLevel = computed(() => {
+  if (isRoot.value) return 'A3（顶级节点 · 第 1 级）';
   if (check.value.childLevel) return check.value.childLevel;
   const parent = selectedParent.value;
   if (!parent) return '—（选择父节点后自动推导）';
@@ -212,8 +230,9 @@ const runCheck = async () => {
   checking.value = true;
   try {
     check.value = await validateHierarchyRelation({
-      parentOneId: form.parentId,
+      parentOneId: isRoot.value ? '' : form.parentId,
       childOneId: info.value.oneId,
+      root: isRoot.value || undefined,
       changeReason: form.changeReason || undefined
     });
   } finally {
@@ -248,10 +267,10 @@ onMounted(async () => {
   };
   walk(tree, 1);
   parentOptions.value = options;
-  if (!form.parentId && options.length) {
-    // 默认选中第一个 A2（最常见的门店归属），没有 A2 时退回第一个可选项
+  if (!form.parentId) {
+    // 默认选中第一个 A2（最常见的门店归属）；层级树为空（系统刚上线）时退回「设为顶级节点」
     const preferred = options.find(item => item.level === 'A2') ?? options[0];
-    form.parentId = preferred.oneId;
+    form.parentId = preferred ? preferred.oneId : ROOT_OPTION;
   }
   await runCheck();
 });
@@ -262,7 +281,11 @@ const submit = async (): Promise<string> => {
   if (check.value.checks.length && !check.value.passed) {
     throw new Error(check.value.blockedReason || '校验未通过，请修正后再归位');
   }
-  const message = await assignHierarchyNode(form);
+  const message = await assignHierarchyNode({
+    ...form,
+    parentId: isRoot.value ? '' : form.parentId,
+    root: isRoot.value || undefined
+  });
   // 通知客户层级页与客户列表重新拉取数据
   markHierarchyChanged();
   return message;

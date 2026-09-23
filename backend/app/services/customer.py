@@ -13,38 +13,188 @@ from ..services.duplicate import duplicate_check
 from ..workflow.engine import start_instance
 
 
+# 提交必填项（对齐总设计「提交校验」+ 主档必填属性）：
+# legal_name 是主档主键属性；credit_code 是主要匹配依据（允许暂缺但要显式确认）；
+# customer_type / bu_scope 是分层与数据权限维度——缺任一项则整单不可入库。
+REQUIRED_SUBMIT_FIELDS = (
+    ("legal_name", "客户法定名称"),
+    ("customer_type", "客户类型"),
+    ("bu_scope", "归属BU"),
+)
+
+
+def validate_submit(payload) -> None:
+    """提交前校验（BUG-PY-04）：全空表单不得产生主档垃圾数据。
+
+    此前 `legal_name: str` 只保证「字段存在」，空串照样通过，于是出现
+    GC-00000005（名称/信用代码皆空、状态 Active）这类脏数据。
+    """
+    missing = [label for code, label in REQUIRED_SUBMIT_FIELDS
+               if not str(getattr(payload, code, None) or "").strip()]
+    if missing:
+        raise ValueError("请填写必填项：" + "、".join(missing))
+    if not str(getattr(payload, "credit_code", None) or "").strip():
+        raise ValueError("请填写必填项：统一社会信用代码")
+
+
+def _blank(value) -> bool:
+    return value is None or not str(value).strip()
+
+
+def dq_score_for(values: dict) -> tuple[float, str]:
+    """确定性 DQ 打分（口径与流程跟踪 DQ 节点展示完全一致）。
+
+    100 分起扣：缺信用代码 -12、缺经营地址 -8、缺省市 -4、缺联系人 -4、缺联系电话 -4；
+    等级 ≥90→A、≥75→B、≥60→C、<60→D。
+
+    此前新建客户全程不打分，`cmd_customer.dq_score` 恒为 NULL——
+    列表「DQ 分数」列空白、统计 avgDqScore=0，而流程跟踪里却按同一规则把分数
+    现算出来展示，两边对不上（测试报告：部分客户 DQ 分数为空）。
+    """
+    score = 100
+    if _blank(values.get("credit_code")):
+        score -= 12
+    if _blank(values.get("address")):
+        score -= 8
+    if _blank(values.get("province")) or _blank(values.get("city")):
+        score -= 4
+    if _blank(values.get("contact_name")):
+        score -= 4
+    if _blank(values.get("contact_phone")):
+        score -= 4
+    score = max(0, score)
+    grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D"
+    return float(score), grade
+
+
+async def cross_bu_conflicts(conn, credit_code: Optional[str], bu_scope: Optional[str],
+                             exclude_one_id: Optional[str] = None) -> list[dict]:
+    """同信用代码在**其它 BU** 的已发布主档 / 在途申请（跨BU判定的事实来源）。
+
+    为什么不能只看查重 peers：duplicate_check 只回传「命中的最佳候选」一条，
+    当同码记录里既有本 BU 的也有别的 BU 的时候，最佳候选若是本 BU，跨BU 就被漏判
+    （「两个 BU 各自批准、GC 无待办」的根因之一）。这里按信用代码把同码记录全量捞出来，
+    任何一条 BU 不同即视为跨BU。
+    """
+    code = (credit_code or "").strip()
+    bu = (bu_scope or "").strip()
+    if not code:
+        return []
+    out: list[dict] = []
+    cust = table("cmd_customer")
+    for r in (await conn.execute(
+        select(cust.c.one_id, cust.c.legal_name, cust.c.bu_scope, cust.c.status)
+        .where(cust.c.credit_code == code)
+        .where(cust.c.status == "active")
+        .where(cust.c.del_flag == "0")
+    )).mappings().all():
+        if (r["bu_scope"] or "").strip() == bu:
+            continue
+        if exclude_one_id and r["one_id"] == exclude_one_id:
+            continue
+        out.append({"one_id": r["one_id"], "legal_name": r["legal_name"],
+                    "bu_scope": r["bu_scope"], "source": "MASTER"})
+    app = table("cmd_customer_application")
+    for r in (await conn.execute(
+        select(app.c.one_id, app.c.legal_name, app.c.bu_scope, app.c.app_no)
+        .where(app.c.credit_code == code)
+        .where(app.c.status.in_(["pending", "returned"]))
+        .where(app.c.del_flag == "0")
+    )).mappings().all():
+        if (r["bu_scope"] or "").strip() == bu:
+            continue
+        if exclude_one_id and r["one_id"] == exclude_one_id:
+            continue
+        out.append({"one_id": r["one_id"], "legal_name": r["legal_name"],
+                    "bu_scope": r["bu_scope"], "app_no": r["app_no"],
+                    "source": "IN_FLIGHT"})
+    return out
+
+
 async def submit_customer(payload, actor: str = "demo") -> dict:
+    validate_submit(payload)
     engine = get_engine()
     async with engine.begin() as conn:
         one_id = await seq.gen_one_id(conn)
         app_no = await seq.gen_app_no(conn)
+        # 提交人：审批详情「提交人」/ 流程跟踪「申请人」的数据源。
+        # 取值优先级：前端传入 applicant_name → 服务入参 actor（非默认 demo 时）→ 兜底默认业务角色。
+        # 此前从未写入 applicant_name，导致该列在审批详情恒显示「-」（测试报告 BUG-PY-03）。
+        applicant = ((getattr(payload, "applicant_name", None) or "").strip()
+                     or (actor if actor and actor != "demo" else "Business User"))
         # 查重对齐 Java matchExisting：信用代码 → EXACT；名称（规范化相等或 Dice≥0.85）→ SUSPECTED；
         # 同信用代码在途申请 → SUSPECTED（上一单未审完时不判 NEW）
-        dup = await duplicate_check(conn, payload.credit_code, payload.legal_name)
-        # 跨BU 判定对齐 Java：服务端比较命中主档 BU 与申请 BU（前端 crossBu 仅作覆盖）
-        cross_bu = bool(payload.cross_bu)
+        # 查重对齐总设计 V6.1：主依据 = 信用代码 + 经营地址，客户名称仅作辅助线索；
+        # 阈值与标准化策略取自 match_rule（scene=CREATE）
+        dup = await duplicate_check(conn, payload.credit_code, payload.legal_name,
+                                    getattr(payload, "address", None), scene="CREATE")
+        # 跨BU 判定：比较命中记录的 BU 与申请 BU（在途申请同样带 bu_scope，前端 crossBu 仅作覆盖）。
+        # 关键修正（BUG-PY-06）：不能只看查重命中的那一条 peers——同码记录可能同时存在
+        # 本 BU 与其它 BU 的多条，最佳候选落在本 BU 时跨BU 会被漏判，于是两个 BU 各自批准、
+        # GC 永远收不到待办。这里对同码记录做全量比对，任一 BU 不同即判跨BU。
+        cross_peers = await cross_bu_conflicts(conn, payload.credit_code,
+                                              payload.bu_scope, exclude_one_id=one_id)
+        cross_bu = bool(payload.cross_bu) or bool(cross_peers)
         if not cross_bu and dup["duplicate_flag"] == "Y" and dup["peers"]:
-            peer_bus = (await conn.execute(
-                select(table("cmd_customer").c.bu_scope).where(
-                    table("cmd_customer").c.one_id.in_([p["one_id"] for p in dup["peers"]])
-                ))).all()
-            cross_bu = any((r._mapping["bu_scope"] or "") != (payload.bu_scope or "")
-                           for r in peer_bus)
-        risk = "High" if dup["duplicate_flag"] == "Y" else "Medium"
+            cross_bu = any((p.get("bu_scope") or "") != (payload.bu_scope or "")
+                           for p in dup["peers"])
+        risk = "High" if (dup["duplicate_flag"] == "Y" or cross_bu) else "Medium"
 
         # 命中存量时写入治理证据（含「候选One ID」键）——
         # 审批端 _is_duplicate_link_approval 依据该键渲染「关联已有/创建新主档」决策按钮组
         evidence = None
         if dup["duplicate_flag"] == "Y" and dup["peers"]:
+            masters = [p for p in dup["peers"] if p.get("source") == "MASTER"]
+            flights = [p for p in dup["peers"] if p.get("source") == "IN_FLIGHT"]
+            contrib = dup["peers"][0].get("contributions") or {}
+            if flights:
+                # 命中的是尚未审批完成的申请，不是已发布主档——文案必须区分，
+                # 否则审批人/审计看到的是一条库里并不存在的「命中主档」
+                basis = ("同一统一社会信用代码 " + str(payload.credit_code)
+                         + " 存在尚未审批完成的在途申请（"
+                         + "、".join(f"{p.get('app_no') or ''}" for p in flights if p.get("app_no"))
+                         + "），库中暂无该主体的已发布主档")
+            else:
+                basis = f"主依据（信用代码 / 经营地址）命中已发布主档：{payload.credit_code}"
+            top = dup["peers"][0]
             evidence = {
                 "候选One ID": "、".join(
                     f"{p['one_id']} · {p.get('legal_name') or ''}" for p in dup["peers"]),
                 "匹配状态": dup["match_state"],
-                "查重依据": f"统一社会信用代码 {payload.credit_code} 命中存量主档",
+                "命中来源": "在途申请" if flights else "已发布主档",
+                "在途申请": "是" if flights else "否",
+                # 申请侧 / 候选侧成对字段：审批弹窗的「字段级对比」按这些键配对渲染
+                # （申请名称/信用代码/注册地址/申请BU/申请来源系统 vs 候选*）。
+                # 缺了申请侧键，对比表每一行都只会显示「（空）」，等于没有证据。
+                "申请名称": payload.legal_name or "",
+                "信用代码": payload.credit_code or "",
+                "注册地址": payload.address or "",
+                "申请BU": payload.bu_scope or "",
+                "申请来源系统": payload.source_system or "",
+                "候选名称": top.get("legal_name") or "",
+                "候选信用代码": top.get("credit_code") or "",
+                "候选经营地址": top.get("address") or "",
+                "候选BU": top.get("bu_scope") or "",
+                "匹配得分": f"{dup.get('score') or 0:.0f}",
+                "字段贡献": "；".join(f"{k} {v:.0f}" for k, v in contrib.items()) or "—",
+                "查重依据": basis,
+                "匹配口径": dup.get("basis") or "",
                 "跨BU": "是" if cross_bu else "否",
+                # 跨BU 事实清单：GC 决策需要知道「到底和哪几条、哪个 BU 撞了」，
+                # 只给一个候选 One ID 会让「跨BU」结论无法核对（BUG-PY-06）
+                "跨BU命中记录": "；".join(
+                    f"{p['one_id']} · {p.get('legal_name') or ''} · {p.get('bu_scope') or ''}"
+                    for p in cross_peers) or "无",
             }
 
         app_id = await seq.next_id(conn, "cmd_customer_application")
+        # DQ 质量分：提交即按确定性规则打分并落库（申请单 + 待办 + 流程变量），
+        # 供「客户详情 / 列表 DQ 分数列 / DQ 统计」直接读取，无需事后复算。
+        dq_value, dq_grade = dq_score_for({
+            "credit_code": payload.credit_code, "address": payload.address,
+            "province": payload.province, "city": payload.city,
+            "contact_name": payload.contact_name, "contact_phone": payload.contact_phone,
+        })
         await conn.execute(table("cmd_customer_application").insert().values(
             id=app_id, app_no=app_no, one_id=one_id,
             legal_name=payload.legal_name, legal_name_en=payload.legal_name_en,
@@ -57,7 +207,8 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             contact_name=payload.contact_name, contact_phone=payload.contact_phone,
             contact_email=payload.contact_email,             status="pending",
             source_system=payload.source_system, match_state=dup["match_state"],
-            duplicate_flag=dup["duplicate_flag"], del_flag="0", create_by=0, create_time=datetime.now(),
+            duplicate_flag=dup["duplicate_flag"], dq_score=dq_value, dq_grade=dq_grade,
+            del_flag="0", create_by=0, create_time=datetime.now(),
         ))
 
         task_id = await seq.next_id(conn, "cmd_approval_task")
@@ -68,7 +219,8 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             scope="BU", current_node_code="BU_REVIEW", current_node_name="BU初审",
             assignee_role="BU_STEWARD", status="PENDING", risk_level=risk,
             duplicate_state=dup["match_state"], cross_bu_flag="Y" if cross_bu else "N",
-            evidence_json=evidence,
+            dq_score=dq_value, evidence_json=evidence,
+            applicant_name=applicant, applicant_id=getattr(payload, "applicant_id", None),
             submit_time=datetime.now(), del_flag="0", create_by=0, create_time=datetime.now(),
         ))
 
@@ -78,7 +230,7 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
                 "taskNo": app_no, "bizType": "CUSTOMER_CREATE", "oneId": one_id,
                 "buScope": payload.bu_scope or "", "crossBu": cross_bu,
                 "riskLevel": risk, "duplicateState": dup["match_state"],
-                "dqScore": None, "sceneCode": "CUSTOMER_CREATE",
+                "dqScore": dq_value, "sceneCode": "CUSTOMER_CREATE",
             },
         )
 
@@ -88,7 +240,7 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             conn, one_id=one_id, task_no=app_no, step_type="SUBMIT",
             node_code="APPLY", node_name="创建客户申请",
             action_type="SUBMIT", action_name="提交申请",
-            operator_name="applicant", operator_role="BU_USER",
+            operator_name=applicant, operator_role="BU_USER",
             from_status="-", to_status="pending",
         )
 
@@ -99,14 +251,14 @@ async def submit_customer(payload, actor: str = "demo") -> dict:
             conn, task_id=task_id, task_no=app_no, one_id=one_id,
             action_type="SUBMIT", action_name="提交申请",
             from_node_code="APPLY", to_node_code="APPLY",
-            operator_name="applicant", operator_role="BU_USER",
+            operator_name=applicant, operator_role="BU_USER",
             opinion=payload.remark if getattr(payload, "remark", None) else "",
         )
 
         # 3.1) Duplicate Check 命中 → 生成疑似重复治理任务（对齐 Java createDuplicateTask：
         #      同BU → SUSPECT；跨BU → CROSS_BU 升 GC）。Exact/Suspected 都由治理者决定关联或新建。
         gov_task_code = None
-        if dup["duplicate_flag"] == "Y" and dup["peers"]:
+        if (dup["duplicate_flag"] == "Y" and dup["peers"]) or cross_peers:
             gov_task_code = await seq.gen_code(conn, "GOV-", 4, "GOVERNANCE")
             gid = await seq.next_id(conn, "cmd_governance_task")
             await conn.execute(table("cmd_governance_task").insert().values(
@@ -228,14 +380,37 @@ async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> O
         )
         return None
 
-    # 重复命中：链路到既有主档；否则新建黄金记录
+    # 重复命中：链路到既有主档；否则新建黄金记录。
+    # 注意：提交时写入的 match_state 只是当时的快照，审批期间存量可能已变化
+    # （例：同主体的前一单先被批准发布），因此发布前必须按设计口径重新查重一次。
     one_id = app_row["one_id"]
     merged_to = None
-    if ((decision or "").lower() not in ("create_new", "exclude")
-            and app_row["duplicate_flag"] == "Y" and app_row["match_state"] == "EXACT"):
-        peers = await duplicate_check(conn, app_row["credit_code"])
-        if peers["peers"]:
-            merged_to = peers["peers"][0]["one_id"]
+    forced_reason = ""
+    fresh = await duplicate_check(conn, app_row["credit_code"], app_row["legal_name"],
+                                  app_row.get("address"), scene="CREATE")
+    same_code_master = None
+    if app_row["credit_code"]:
+        cust_t = table("cmd_customer")
+        same_code_master = (await conn.execute(
+            select(cust_t.c.one_id)
+            .where(cust_t.c.credit_code == app_row["credit_code"])
+            .where(cust_t.c.status == "active")
+            .where(cust_t.c.del_flag == "0")
+            .order_by(desc(cust_t.c.create_time))
+            .limit(1)
+        )).first()
+    if same_code_master is not None and same_code_master._mapping["one_id"] != one_id:
+        # 统一社会信用代码是国家唯一标识：同码已有主档时绝不新建第二条黄金记录，
+        # 否则「两条申请都批准」会产出同码双主档，直接破掉设计文档「One ID 稳定」的硬约束。
+        merged_to = same_code_master._mapping["one_id"]
+        if (decision or "").lower() in ("create_new", "exclude"):
+            forced_reason = ("审批判定为「排除重复·继续新建」，但库中已存在同一统一社会信用代码的"
+                             "已发布主档，按 One ID 唯一性强制关联，未新建黄金记录")
+    elif (decision or "").lower() not in ("create_new", "exclude"):
+        # 治理者选择「关联 / 合并」：命中已发布主档即链路过去（含按地址判出的 EXACT/SUSPECTED）
+        master_peers = [p for p in fresh["peers"] if p.get("source") == "MASTER"]
+        if master_peers and master_peers[0]["one_id"] != one_id:
+            merged_to = master_peers[0]["one_id"]
 
     # 幂等守卫：one_id 已有主档（如重复审批/重放）不重复 INSERT——
     # 否则撞唯一键直接 500（真实案例：升级误发布后 GC 再点「退回BU」报 Internal Server Error）
@@ -251,7 +426,42 @@ async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> O
         )
         return one_id
 
+    if merged_to:
+        # 关联到既有主档：本单不新建黄金记录（设计文档：Exact / 治理后关联已有 One ID）
+        vals = {
+            "status": "approved",
+            "merged_to_one_id": merged_to,
+            "effective_from": datetime.now(),
+            "approved_time": datetime.now(),
+        }
+        if forced_reason:
+            vals["remark"] = forced_reason
+        await conn.execute(
+            table("cmd_customer_application").update()
+            .where(table("cmd_customer_application").c.app_no == app_row["app_no"])
+            .values(**vals)
+        )
+        return merged_to
+
+    # 同码还有更早提交的在途申请（本条是后提交却先被批准）→ 在本单备注留痕，
+    # 提示治理者跟进前一单的处置，避免同一主体留下两条「都已批准」的记录
+    earlier_in_flight = None
+    if app_row["credit_code"]:
+        app_t = table("cmd_customer_application")
+        earlier_in_flight = (await conn.execute(
+            select(app_t.c.app_no)
+            .where(app_t.c.credit_code == app_row["credit_code"])
+            .where(app_t.c.status.in_(["pending", "returned"]))
+            .where(app_t.c.del_flag == "0")
+            .where(app_t.c.id < app_row["id"])
+            .order_by(app_t.c.id)
+            .limit(1)
+        )).first()
+
     cust_id = await seq.next_id(conn, "cmd_customer")
+    # 发布时把 DQ 分值带进黄金记录（申请单上已有则沿用，历史单据为空则按同一规则现算），
+    # 保证主档列表「DQ 分数」列 / DQ 统计 / 客户详情三处口径一致。
+    dq_value, dq_grade = dq_score_for(dict(app_row))
     await conn.execute(table("cmd_customer").insert().values(
         id=cust_id, one_id=one_id, legal_name=app_row["legal_name"],
         legal_name_en=app_row["legal_name_en"], short_name=app_row["short_name"],
@@ -264,15 +474,66 @@ async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> O
         contact_phone=app_row["contact_phone"], contact_email=app_row["contact_email"],
         status="active", source_system=app_row["source_system"],
         match_state=app_row["match_state"], duplicate_flag=app_row["duplicate_flag"],
+        dq_score=dq_value, dq_grade=dq_grade,
         merged_to_one_id=merged_to, del_flag="0", approved_by=0, approved_time=datetime.now(),
         create_by=0, create_time=datetime.now(),
     ))
+    vals = {"status": "approved", "effective_from": datetime.now(),
+            "approved_time": datetime.now(), "dq_score": dq_value, "dq_grade": dq_grade}
+    if earlier_in_flight is not None:
+        vals["remark"] = (f"本条已发布为 One ID {one_id}；同信用代码仍有更早提交的在途申请 "
+                          f"{earlier_in_flight._mapping['app_no']} 待处置，请跟进确认是否同一主体")
     await conn.execute(
         table("cmd_customer_application").update()
         .where(table("cmd_customer_application").c.app_no == app_row["app_no"])
-        .values(status="approved", effective_from=datetime.now(), approved_time=datetime.now())
+        .values(**vals)
     )
+    # 疑似重复但暂时无主档可关联（命中的是仍在途的另一单）：
+    # 发布后必须留下治理线索，否则库里出现「duplicate_flag=Y 且 mergedToOneId 为空」的悬空态，
+    # 既不知道跟谁重复、也没人跟进（报告中的「SUSPECTED批准后未建立合并关系」）。
+    if (app_row.get("duplicate_flag") or "N") == "Y" and merged_to is None:
+        await ensure_suspect_governance(conn, app_row, one_id)
     return one_id
+
+
+async def ensure_suspect_governance(conn, app_row, one_id: str) -> Optional[str]:
+    """为「疑似重复但未建立关联」的已发布客户登记一条治理任务（幂等）。
+
+    治理者在「治理与审批 → 治理任务」里能直接看到：跟哪个 One ID 疑似重复、
+    对方是本 BU 还是跨 BU、当前卡在哪个节点，从而决定「关联已有 / 确认新建 / 退回修复」。
+    """
+    if app_row.get("merged_to_one_id"):
+        return None
+    gov = table("cmd_governance_task")
+    exist = (await conn.execute(
+        select(gov.c.task_code).where(gov.c.one_id == one_id)
+        .where(gov.c.status == "OPEN").where(gov.c.del_flag == "0")
+    )).first()
+    if exist is not None:
+        return exist._mapping["task_code"]
+    code = (app_row.get("credit_code") or "").strip()
+    peers = await cross_bu_conflicts(conn, code, app_row.get("bu_scope"),
+                                     exclude_one_id=one_id) if code else []
+    conflict = ("；".join(f"{p['one_id']} · {p.get('legal_name') or ''} · {p.get('bu_scope') or ''}"
+                          for p in peers) or "同码在途申请（对方尚未发布主档）")
+    task_code = await seq.gen_code(conn, "GOV-", 4, "GOVERNANCE")
+    gid = await seq.next_id(conn, "cmd_governance_task")
+    await conn.execute(gov.insert().values(
+        id=gid, task_code=task_code,
+        task_type="CROSS_BU" if peers else "SUSPECT",
+        biz_type="CUSTOMER_CREATE", biz_id=app_row.get("app_no"),
+        one_id=one_id, subject=app_row.get("legal_name"),
+        bu_scope=app_row.get("bu_scope") or "",
+        cross_bu_flag="Y" if peers else "N",
+        risk_level="High" if peers else "Medium",
+        match_state=app_row.get("match_state") or "SUSPECTED",
+        status="OPEN",
+        evidence_json={"匹配状态": app_row.get("match_state") or "SUSPECTED",
+                       "命中冲突": conflict,
+                       "说明": "疑似重复已发布但当时无可关联主档，需人工确认合并目标或确认新建"},
+        del_flag="0", create_by=0, create_time=datetime.now(),
+    ))
+    return task_code
 
 
 MATCH_EXCLUDED_STATUS = ("merged", "rejected", "draft")

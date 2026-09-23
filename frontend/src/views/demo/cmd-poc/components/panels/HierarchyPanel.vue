@@ -20,7 +20,7 @@
         <el-alert type="success" :closable="false" show-icon class="poc-note m-b-12">
           <template #title>
             <b>主数据 ↔ 客户层级：</b>
-            客户<strong>审批通过</strong>即成为主数据（「客户管理」可见），并自动登记为「<strong>待归位</strong>」节点（当前 {{ loadingUnassigned ? '…' : unassigned.length }} 个）；
+            客户<strong>审批通过</strong>即成为主数据（「客户管理」可见），并自动登记为「<strong>待归位</strong>」节点（当前 {{ unassignedCountText }} 个）；
             由 Data Steward <strong>归位</strong>到 A3-A2-A1 后，才进入中间层级树（当前 {{ treeNodeCount }} 个节点）。
             两部分合起来才是主数据的完整视图。
           </template>
@@ -102,6 +102,21 @@
             </div>
             <div ref="treeBodyRef" class="hier-panel-body hier-tree-body">
               <div class="hier-bread">{{ currentNode?.path ?? '-' }}</div>
+              <!-- 空树引导：系统刚上线时层级树没有任何节点，给出从零建树的入口说明 -->
+              <el-alert
+                v-if="!treeNodeCount && !searching"
+                type="warning"
+                :closable="false"
+                show-icon
+                class="poc-note m-b-8"
+              >
+                <template #title>
+                  <b>层级树为空（系统刚上线）：</b>
+                  切到上方「待归位主数据」页签，对第一个已生效客户点「归位」，在「目标父节点」里选
+                  <b>★ 设为顶级节点（A3 集团）</b>，即可立起第一个 A3 根节点；
+                  后续客户再逐级归位到它下面，形成 A3 → A2 → A1。
+                </template>
+              </el-alert>
               <el-tree
                 ref="treeRef"
                 :data="treeData"
@@ -202,7 +217,7 @@
       -->
       <el-tab-pane
         name="unassigned"
-        :label="loadingUnassigned ? '待归位主数据 (…)' : `待归位主数据 (${unassigned.length})`"
+        :label="unassignedTabLabel"
       >
         <el-card class="page-card" shadow="never" :body-style="{ padding: '20px' }">
           <template #header>
@@ -215,6 +230,7 @@
                 clearable
                 style="width: 240px; margin-left: auto"
               />
+              <el-button size="small" plain :loading="loadingUnassigned" @click="loadUnassigned">刷新</el-button>
             </div>
           </template>
 
@@ -229,7 +245,7 @@
             :data="filteredUnassigned"
             border
             class="data-table"
-            :empty-text="loadingUnassigned ? '正在加载待归位主数据…' : ''"
+            :empty-text="loadingUnassigned ? '正在加载待归位主数据…' : (unassignedError || '')"
           >
             <el-table-column label="客户名称" prop="name" min-width="200" show-overflow-tooltip />
             <el-table-column label="One ID" prop="oneId" width="180" />
@@ -251,7 +267,12 @@
             </el-table-column>
           </el-table>
 
-          <el-empty v-if="!filteredUnassigned.length && !loadingUnassigned" description="暂无待归位主数据" />
+          <el-empty
+            v-if="!filteredUnassigned.length && !loadingUnassigned"
+            :description="unassignedError || '暂无待归位主数据'"
+          >
+            <el-button v-if="unassignedError" type="primary" plain @click="loadUnassigned">重试加载</el-button>
+          </el-empty>
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -284,6 +305,8 @@ const { roleKey, readOnly, openDialog, hierarchyVersion, markHierarchyChanged } 
 /** Tab 切换：层级浏览（查询） / 待归位主数据（操作） */
 const activeTab = ref<'browse' | 'unassigned'>('browse');
 const loadingUnassigned = ref(false);
+/** 待归位加载失败文案（非空则页签与空态都以它为准，不再显示误导性的 0 条） */
+const unassignedError = ref('');
 
 const treeRef = ref<InstanceType<typeof ElTree>>();
 /** 树容器（滚动定位时在其内部按 data-node-id 查找节点） */
@@ -373,6 +396,17 @@ const filteredUnassigned = computed(() => {
     item => item.name.toLowerCase().includes(keyword) || item.oneId.toLowerCase().includes(keyword)
   );
 });
+
+/**
+ * 待归位计数文案：加载中「…」/ 失败「加载失败」/ 成功才给真实条数。
+ * 绝不在数据未到位时渲染 0——那会被读成「没有待归位数据」（BUG-PY-05 / BUG-16）。
+ */
+const unassignedCountText = computed(() => {
+  if (loadingUnassigned.value) return '…';
+  if (unassignedError.value) return '加载失败';
+  return String(unassigned.value.length);
+});
+const unassignedTabLabel = computed(() => `待归位主数据 (${unassignedCountText.value})`);
 
 /** 层级树节点总数（已归位部分，不含「加载更多」占位行） */
 const treeNodeCount = computed(() => {
@@ -691,7 +725,25 @@ watch(
 
 /** 待归位主数据：已批准成为主数据但尚未归位的客户 */
 const loadUnassigned = async () => {
-  unassigned.value = await getUnassignedNodes();
+  /*
+   * 必须真正翻转 loadingUnassigned（BUG-PY-05）：
+   * 此前该 ref 只是声明、从未赋值，于是页签标题永远按「已加载完但 0 条」渲染成
+   * 「待归位主数据 (0)」——首屏数据还没回来就先显示 0；一旦本轮请求失败更是长期停在 0。
+   * 同一时刻「客户管理」列表因为走另一条链路（层级索引）已经把 active 客户标成「待归位」，
+   * 两处对不上，看起来就是「详情说待归位、列表却是 0」。
+   * 现在：加载中显示省略号，失败显示「加载失败」，只有真拿到结果才展示条数。
+   */
+  loadingUnassigned.value = true;
+  unassignedError.value = '';
+  try {
+    unassigned.value = await getUnassignedNodes();
+  } catch {
+    unassigned.value = [];
+    unassignedError.value = '待归位主数据加载失败，请检查后端服务后重试';
+    ElMessage.error(unassignedError.value);
+  } finally {
+    loadingUnassigned.value = false;
+  }
 };
 
 /** 归位：打开弹窗，把该主数据挂到某个 A3 / A2 之下 */

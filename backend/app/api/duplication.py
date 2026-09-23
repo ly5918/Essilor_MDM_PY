@@ -15,10 +15,13 @@ router = APIRouter(prefix="/cmd/duplication", tags=["重复核验"])
 
 
 @router.get("/candidate")
-async def candidate(creditCode: str = Query(..., description="统一社会信用代码")):
+async def candidate(creditCode: str = Query(None, description="统一社会信用代码（主依据）"),
+                    legalName: str = Query(None, description="客户名称（辅助线索）"),
+                    address: str = Query(None, description="经营地址（主依据）")):
+    """重复核验：主依据 = 信用代码 + 经营地址，客户名称仅作辅助线索（总设计 V6.1 口径）。"""
     engine = get_engine()
     async with engine.connect() as conn:
-        data = await duplicate_check(conn, creditCode)
+        data = await duplicate_check(conn, creditCode, legalName, address, scene="CREATE")
     return R.ok(data)
 
 

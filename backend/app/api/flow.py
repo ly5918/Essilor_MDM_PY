@@ -83,6 +83,9 @@ async def flow_graph(scene_code: str, taskNo: Optional[str] = Query(None)):
     steps = sl.build_swimlane(scene_code)
     touched: set = set()
     task = None
+    returned = False
+    return_src: Optional[str] = None
+    current_code = ""
     if taskNo:
         conn = await get_engine().connect()
         try:
@@ -90,18 +93,23 @@ async def flow_graph(scene_code: str, taskNo: Optional[str] = Query(None)):
             task = (await conn.execute(
                 t.select().where(t.c.task_no == taskNo))).mappings().first()
             if task is not None:
-                # 真实轨迹：cmd_approval_action 按 to/from 节点归并点亮自动节点
+                # 真实轨迹：cmd_approval_action 的 to / from 两端都算「到过」——
+                # 只取 to 会漏掉升级动作的起节点（BU_REVIEW → GC_REVIEW 时 BU 初审不会被点亮）
                 act = table("cmd_approval_action")
-                actions = (await conn.execute(
+                actions = [dict(a) for a in (await conn.execute(
                     act.select().where(act.c.task_id == task["id"])
-                    .order_by(act.c.action_time))).mappings().all()
+                    .order_by(act.c.action_time))).mappings().all()]
                 act_by_node: dict[str, dict] = {}
                 for a in actions:
-                    key = a["to_node_code"] or a["from_node_code"]
-                    if key:
-                        act_by_node.setdefault(key, dict(a))
+                    for key in (a.get("to_node_code"), a.get("from_node_code")):
+                        if key:
+                            act_by_node[key] = a          # 后发生的动作覆盖先发生的
                 touched = set(act_by_node.keys())
-                sl.apply_step_status(steps, task["status"], task["current_node_name"], touched)
+                returned = sl.is_returned(task["status"], task["current_node_name"], actions)
+                return_src = sl.return_source_node(actions)
+                current_code = sl.apply_step_status(
+                    steps, task["status"], task["current_node_name"], touched,
+                    current_node_code=task["current_node_code"], returned=returned)
         finally:
             await conn.close()
 
@@ -130,6 +138,14 @@ async def flow_graph(scene_code: str, taskNo: Optional[str] = Query(None)):
             "label": "", "skipType": "PASS",
             "passed": nodes[k]["status"] == "COMPLETED",
         })
+    # 退回连线：从退回发起的节点指回当前停留节点（泳道图上的「退回」回溯箭头）。
+    # 主流程连线只表达「往前走」，退回是逆方向的一跳，必须单独画出来，
+    # 否则图上完全看不出这一单已经被打回。
+    if returned and return_src and current_code and return_src != current_code:
+        codes = {n["nodeCode"] for n in nodes}
+        if return_src in codes and current_code in codes:
+            edges.append({"from": return_src, "to": current_code,
+                          "label": "退回", "skipType": "RETURN", "passed": False})
     graph = {"definitionId": scene_code, "flowCode": sl.SCENE_FLOW_CODE.get(scene_code, ""),
              "lanes": sl.LANE_ORDER, "nodes": nodes, "edges": edges}
     return R.ok(graph)
@@ -245,12 +261,14 @@ async def flow_trace(task_no: str):
         scene = smap.get(scene_code, {})
         steps = sl.build_swimlane(scene_code)
 
-        # 轨迹按节点归并（人工节点由审批动作写入，自动节点由系统轨迹写入）
+        # 轨迹按节点归并（人工节点由审批动作写入，自动节点由系统轨迹写入）。
+        # to / from 两端都登记：升级动作 from=BU_REVIEW、to=GC_REVIEW，
+        # 只取一端会让「谁在哪个节点做了什么」丢一半。
         act_by_node: dict[str, dict] = {}
         for a in actions:
-            key = a.get("to_node_code") or a.get("from_node_code")
-            if key:
-                act_by_node.setdefault(key, a)
+            for key in (a.get("to_node_code"), a.get("from_node_code")):
+                if key:
+                    act_by_node[key] = a          # 后发生的动作覆盖先发生的
         for s in steps:
             a = act_by_node.get(s["nodeCode"])
             if a:
@@ -260,7 +278,10 @@ async def flow_trace(task_no: str):
             if s["nodeCode"] in sl.MANUAL_REVIEW_NODES:
                 s["assignee"] = "GC_STEWARD" if s["nodeCode"] == sl.NODE_GC_REVIEW else "BU_STEWARD"
         sl.apply_step_status(steps, task.get("status"), task.get("current_node_name"),
-                             set(act_by_node.keys()))
+                             set(act_by_node.keys()),
+                             current_node_code=task.get("current_node_code"),
+                             returned=sl.is_returned(task.get("status"),
+                                                     task.get("current_node_name"), actions))
         done, total_steps, pct = _progress(steps)
 
         # 分步骤明细（1:1 移植 Java fillStepDetails：每个节点都有内容，点步骤条即切）
@@ -307,6 +328,8 @@ async def flow_trace(task_no: str):
         "flowCode": scene.get("flow_code"),
         "flowName": scene.get("flow_name"),
         "status": task.get("status"),
+        # 已退回：前端据此提示「本单被打回、下游节点需重做」（琥珀色标记）
+        "returned": sl.is_returned(task.get("status"), task.get("current_node_name"), actions),
         "currentNodeName": task.get("current_node_name"),
         "assigneeName": task.get("assignee_name"),
         "assigneeRole": task.get("assignee_role"),

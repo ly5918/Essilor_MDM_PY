@@ -28,13 +28,13 @@
           <el-menu-item v-for="child in menu.children" :key="child.id" :index="child.id" class="side-sub-item">
             <span class="cn-ico cn-ico-sub">{{ child.icon }}</span>
             <span class="cn-txt">{{ child.label }}</span>
-            <span v-if="child.requiresApproval && badgeMap[child.id]" class="cn-badge">{{ badgeMap[child.id] }}</span>
+            <span v-if="navCount(child)" class="cn-badge">{{ navCount(child) }}</span>
           </el-menu-item>
         </el-sub-menu>
         <el-menu-item v-else :index="menu.id">
           <span class="cn-ico">{{ menu.icon }}</span>
           <span class="cn-txt">{{ menu.label }}</span>
-          <span v-if="menu.requiresApproval && badgeMap[menu.id]" class="cn-badge">{{ badgeMap[menu.id] }}</span>
+          <span v-if="navCount(menu)" class="cn-badge">{{ navCount(menu) }}</span>
         </el-menu-item>
       </template>
     </el-menu>
@@ -44,7 +44,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import type { PageId } from '@/api/demo/cmdPoc/types';
-import { getNavBadges } from '@/api/demo/cmdPoc';
+import { getCustomerStats, getNavBadges } from '@/api/demo/cmdPoc';
+import type { PocMenu } from '../constants/roles';
 import { useCmdPoc } from '../composables/useCmdPoc';
 
 const { role, roleKey, currentPage, goMenu, badgeVersion } = useCmdPoc();
@@ -83,13 +84,60 @@ const fetchBadges = async () => {
 /** 菜单项 badge 映射（模板侧再叠加 requiresApproval 判断；值为 0 时不显示角标） */
 const badgeMap = computed<Record<string, number>>(() => navBadges.value);
 
+/**
+ * 「处理中申请」在途条数角标（roles.ts 里 `badge: 'inFlight'` 的菜单）。
+ *
+ * 与审批类角标分开取数：审批待办是「别人提交、等我来审」（只有 Steward 有），
+ * 在途申请是「我提交的、还在流程里」（业务用户 / 审计角色同样要看），
+ * 二者口径与数据源都不同，因此不复用 /cmd/nav/badge。数字取自
+ * /cmd/customer/stats 的 pendingCount —— 后端口径就是申请单表 status ∈ (pending, returned)，
+ * 与「处理中申请」列表的「在途」一致（/application/stats 目前只回 total/pending/approved/rejected，
+ * 没有 inFlight，用它会把角标恒算成 0）。
+ */
+const appInFlight = ref(0);
+
+/** 当前角色是否存在需要展示在途数的菜单（Business / Steward / Auditor 都有） */
+const hasInFlightMenu = computed(() => {
+  const walk = (menus: typeof role.value.menus): boolean =>
+    menus.some(m => m.badge === 'inFlight' || (m.children?.length ? walk(m.children) : false));
+  return walk(role.value.menus);
+});
+
+const fetchAppInFlight = async () => {
+  if (!hasInFlightMenu.value) {
+    appInFlight.value = 0;
+    return;
+  }
+  try {
+    appInFlight.value = (await getCustomerStats()).pendingCount ?? 0;
+  } catch {
+    /* 拉取失败时保留上一次数字，避免角标莫名消失；失败不该把「有在途」显示成「没有」 */
+  }
+};
+
+/**
+ * 菜单角标取值：按 roles.ts 声明的 `badge` 来源取数，0 / 未声明则不渲染。
+ * （approval 类菜单仍由 requiresApproval + /cmd/nav/badge 驱动，行为不变）
+ */
+const navCount = (menu: PocMenu): number =>
+  menu.badge === 'inFlight' ? appInFlight.value : (badgeMap.value[menu.id] ?? 0);
+
 /** 切换角色时按新角色重新统计（BU / GC / Admin / Auditor 口径不同） */
-watch(roleKey, () => fetchBadges());
+watch(roleKey, () => {
+  fetchBadges();
+  fetchAppInFlight();
+});
 
 /** 审批/提交等操作后刷新 badge（badgeVersion 自增触发） */
-watch(badgeVersion, () => fetchBadges());
+watch(badgeVersion, () => {
+  fetchBadges();
+  fetchAppInFlight();
+});
 
-onMounted(fetchBadges);
+onMounted(() => {
+  fetchBadges();
+  fetchAppInFlight();
+});
 
 /** 默认展开包含当前页面的父菜单（RuoYi 行为：进入子页面时父菜单保持展开） */
 const defaultOpeneds = computed(() =>

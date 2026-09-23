@@ -77,8 +77,10 @@ async def stats(buScope: Optional[str] = Query(None)):
         gov_new = await _count(conn, gov, *_gov_conds("NEW"))
         gov_cross_bu = await _count(conn, gov, *_gov_conds("CROSS_BU"))
 
-        # --- 层级节点 ---
-        node_conds = []
+        # --- 层级节点（口径：已归位上树的节点；「待归位」登记节点不计入，
+        #     它们由「客户层级 › 待归位主数据」单独统计，两边互补不重复） ---
+        node_conds = [or_(node.c.hierarchy_type.is_(None),
+                          node.c.hierarchy_type != "UNASSIGNED")]
         if buScope:
             node_conds.append(node.c.bu_scope == buScope)
         hierarchy_node_count = await _count(conn, node, *node_conds)

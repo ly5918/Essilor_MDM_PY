@@ -173,6 +173,28 @@ async def _load_ctx(conn, task: dict) -> dict:
         ), {"o": one_id})).mappings().first()
         customer = dict(r) if r else None
 
+    # 处理中的申请：客户数据尚未落主档，从申请单回退读取（字段与主档同名对齐）
+    if customer is None and (one_id or biz_id):
+        conds, params = [], {"o": one_id or "", "b": biz_id}
+        if one_id and one_id != "-":
+            conds.append("one_id = :o")
+        if biz_id:
+            conds.append("app_no = :b")
+        r = (await conn.execute(text(
+            "SELECT one_id, legal_name, legal_name_en, short_name, credit_code, tax_no,"
+            " customer_type, product_line, bu_scope, country, province, city, address,"
+            " contact_name, contact_phone, contact_email, status, source_system, source_id,"
+            " CAST(dq_score AS CHAR) AS dq_score, dq_grade, match_state, duplicate_flag,"
+            " CAST(NULL AS CHAR) AS version_no,"
+            " DATE_FORMAT(effective_from, '%Y-%m-%d %H:%i') AS effective_from,"
+            " CAST(flow_instance_id AS CHAR) AS flow_instance_id, flow_status"
+            " FROM cmd_customer_application WHERE del_flag = '0' AND ("
+            + " OR ".join(conds) + ") ORDER BY id DESC LIMIT 1"
+        ), params)).mappings().first()
+        if r:
+            customer = dict(r)
+            customer["_from_application"] = True
+
     # 批量导入：申请不挂单一 One ID，业务主键是批次号
     import_job, import_rows = None, []
     if customer is None and biz_id:
@@ -420,7 +442,9 @@ def _ocr_detail(d, task, step, ctx, actions):
     _table(d, "识别字段与回填结果", ["字段", "识别值", "回填状态", "置信度"], rows)
     if not persisted:
         d["notes"].append("POC 环境 OCR 按文件名匹配预置结果，cmd_ocr_result 为空；"
-                          "上表「识别值」是识别后实际写入客户主档的字段值（cmd_customer）。")
+                          "上表「识别值」是识别后实际写入的字段值"
+                          + ("（申请处理中，取自申请单 cmd_customer_application）" if c.get("_from_application")
+                             else "（cmd_customer 主档）") + "。")
 
 
 def _dq_detail(d, task, step, ctx, actions):

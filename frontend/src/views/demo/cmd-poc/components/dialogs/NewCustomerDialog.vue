@@ -72,6 +72,48 @@
         </el-col>
       </el-row>
 
+      <!--
+        基础字段兜底（测试报告 BUG-PY-03）：
+        元数据未发布时动态区渲染 0 个字段，OCR 识别结果无处可见、无法在提交前核对。
+        这里覆盖 OCR 会回填的全部字段（名称 / 信用代码 / 注册地址 / 省份 / 城市），
+        保证「元数据未发布」时识别结果也 100% 可见可改，不影响新建客户主流程。
+        已发布字段时不渲染，避免与之重复。
+      -->
+      <template v-if="!dynamicFields.length">
+        <div class="form-section">基础字段（核心主档列）</div>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="客户法定名称" prop="legalName" required>
+              <el-input v-model="form.legalName" placeholder="请输入客户法定名称" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="统一社会信用代码" prop="creditCode">
+              <el-input v-model="form.creditCode" placeholder="请输入统一社会信用代码" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="注册地址" prop="address">
+              <el-input v-model="form.address" placeholder="请输入注册地址" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="省份" prop="dynamicValues.province">
+              <el-input v-model="form.dynamicValues.province" placeholder="请输入省份" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="城市" prop="dynamicValues.city">
+              <el-input v-model="form.dynamicValues.city" placeholder="请输入城市" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <div class="form-tip" style="margin: -6px 0 10px 190px;">
+          OCR 识别结果已按字段名回填到上方「名称 / 信用代码 / 地址 / 省份 / 城市」；
+          该兜底表单仅在未发布元数据时出现，发布字段后自动切换为动态表单。
+        </div>
+      </template>
+
       <el-form-item label="营业执照">
         <el-button plain icon="Upload" @click="openOcr">上传并OCR识别</el-button>
         <span class="form-tip">识别结果按字段名称回填到上方「动态客户字段」，并标记 OCR回填 标签</span>
@@ -195,8 +237,8 @@
         <b>下一步怎么做：</b>
         <template v-if="submitResult.matchedInFlight">
           本条申请已进入「<b>{{ submitResult.currentNodeName || 'BU Scope 初审' }}</b>」队列，与命中的在途申请
-          <b>{{ submitResult.matchedTaskNo || submitResult.matchedOneId }}</b> 并行。请到左侧菜单「<b>治理与审批</b>」跟踪两条待办，
-          由 Data Steward 判定是否合并到同一 One ID——<b>不要重复提交第三次</b>。
+          <b>{{ submitResult.matchedTaskNo || submitResult.matchedOneId }}</b> 并行。可在左侧菜单「<b>客户管理 › 处理中申请</b>」
+          跟踪本条走到哪一步；两条待办都由 Data Steward 在「治理与审批」判定是否合并到同一 One ID——<b>不要重复提交第三次</b>。
         </template>
         <template v-else>
           本条申请已进入「<b>{{ submitResult.currentNodeName || 'BU Scope 初审' }}</b>」队列，批准后将按合并流程把本条关联到
@@ -237,7 +279,7 @@ defineOptions({ name: 'CmdPocNewCustomerDialog' });
 
 defineProps<{ payload?: Record<string, unknown> }>();
 
-const { publishedFields, metadataFields, loadMetadataFields, loadCustomers, ocrPrefill, setOcrPrefill, refreshBadge, openDialog } = useCmdPoc();
+const { publishedFields, metadataFields, loadMetadataFields, loadCustomers, ocrPrefill, setOcrPrefill, refreshBadge, openDialog, goMenu } = useCmdPoc();
 
 /** 已在「业务上下文」维护或由系统托管的字段，不在动态区重复渲染 */
 const CONTEXT_FIELD_CODES = ['customer_type', 'bu_scope', 'product_line', 'source_system', 'status'];
@@ -290,6 +332,10 @@ const rules = computed<FormRules>(() => {
     .forEach(field => {
       dynamicRules[`dynamicValues.${field.code}`] = [{ required: true, message: `请输入${field.label}`, trigger: 'blur' }];
     });
+  // 元数据未发布（动态区为空）时改由「基础字段」录入：客户法定名称是主档必填列（后端 legal_name: str）
+  if (!dynamicFields.value.length) {
+    dynamicRules.legalName = [{ required: true, message: '请输入客户法定名称', trigger: 'blur' }];
+  }
   return dynamicRules;
 });
 
@@ -431,6 +477,17 @@ const submitResult = ref<CustomerSubmitVO | null>(null);
 const keepOpenAfterSubmit = computed(() => submitResult.value !== null);
 
 /**
+ * 回执里点「匹配结论」/ 命中的 One ID：打开那条主档的详情。
+ * <p>
+ * 此前模板引用了不存在的 onViewMatched（点击直接抛错），提交人只能自己去列表里翻那条记录比对。
+ * 详情弹窗支持只传 oneId（会自行查库补全），因此这里不必再取整行数据。
+ */
+const onViewMatched = () => {
+  const oneId = submitResult.value?.matchedOneId;
+  if (oneId) openDialog('customerDetail', { oneId });
+};
+
+/**
  * 回执展开后主按钮语义从「提交申请」改为「完成并关闭」。
  * 不改的话用户会以为还要再点一次，手一抖就把同一家客户第三次提交进库。
  */
@@ -455,10 +512,9 @@ const fmtReceiptTime = (value?: string) => (value ? value.replace('T', ' ').slic
 
 /** 提交申请：后端落主档 + 生成待办 + 启动流程实例，随后刷新客户列表 */
 const submit = async (): Promise<string> => {
-  // 已出回执时主按钮表示「完成并关闭」：置关窗标志并返回，绝不二次提交
+  // 已出回执时主按钮表示「完成并关闭」：直接返回，绝不二次提交
   // （否则同一家客户会被反复建号，正是本功能要拦的场景）
   if (submitResult.value) {
-    receiptAcknowledged.value = true;
     return `本次提交已完成：One ID ${submitResult.value.oneId ?? '-'}｜申请编号 ${submitResult.value.taskNo ?? '-'}`;
   }
   // 1) 前端先按「动态必填字段」校验：缺失字段以红字标注并汇总提示，
@@ -482,6 +538,13 @@ const submit = async (): Promise<string> => {
   const result = await submitCustomer(form);
   await loadCustomers();
   refreshBadge();
+  /*
+   * 提交成功后把底层页面切到「处理中申请」（客户管理 › 处理中申请）。
+   * 申请单在主档列表里查不到（那份列表只有 Golden Record），停在主档页等于
+   * 「提交完什么都没发生」；切到申请页后刚提交的那条落在列表首行，菜单角标也同步 +1。
+   * 命中重复、弹窗保持打开时同样先切好底层页，用户点「完成并关闭」即看到结果。
+   */
+  goMenu('custapps');
   const node = result.currentNodeName ?? 'BU Scope 初审';
   // 2) Duplicate Check 命中 → 原地展开查重回执（讲清「命中谁 / 对方是否还在途 / 下一步做什么」），
   //    而不是吞掉结论只给一句成功 toast。这是「同一家公司被重复提交两次」信息断点的根治点。
@@ -489,7 +552,7 @@ const submit = async (): Promise<string> => {
     submitResult.value = result;
     return `客户申请已提交，但系统判定为「${result.matchStateName ?? '疑似重复'}」，请查看下方《查重回执》`;
   }
-  return `客户申请已提交：One ID ${result.oneId ?? '-'}｜申请编号 ${result.taskNo ?? '-'}，已进入「${node}」，可在「治理与审批」查看待办`;
+  return `客户申请已提交：One ID ${result.oneId ?? '-'}｜申请编号 ${result.taskNo ?? '-'}，已进入「${node}」，可在「客户管理 › 处理中申请」查看进度`;
 };
 
 defineExpose({ submit, keepOpenAfterSubmit, confirmText });

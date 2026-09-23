@@ -85,6 +85,8 @@ async def _enrich_peer_in_flight(conn, rows: list[dict]) -> None:
 @router.get("/list")
 async def list_approval(
     taskCategory: Optional[str] = Query(None),
+    openOnly: bool = Query(
+        False, description="仅返回未闭环任务（PENDING / RETURNED），用于待办类页签"),
     status: Optional[str] = Query(None),
     scope: Optional[str] = Query(None),
     role: Optional[str] = Query(None),
@@ -95,7 +97,15 @@ async def list_approval(
 ):
     """队列口径（与 Java 一致）：
     ALL = PENDING+RETURNED（不按建表分类过滤）；DONE = 终态；RETURNED = 状态 RETURNED；
-    其余按 taskCategory 列匹配。"""
+    其余按 taskCategory 列匹配。
+
+    openOnly：按分类取数时是否只保留未闭环任务。
+    「审批任务 / 治理复核」是**待办视图**，必须传 true——否则页签会把已办结
+    （APPROVED / REJECTED / COMPLETED / CANCELLED）的历史任务一起列出来，
+    出现「全部待办 2 条、审批任务 3 条」的口径打架；且点进已办结任务时
+    后端按「终态不下发动作」返回空按钮，页面上表现为「点进去没有审批按钮」。
+    已办结记录统一在「我已处理」页签查看（该页签不传 openOnly）。
+    """
     t = table("cmd_approval_task")
     conds = [t.c.del_flag == "0"]
     cat = (taskCategory or "").upper()
@@ -108,6 +118,8 @@ async def list_approval(
             conds.append(t.c.status == "RETURNED")
     elif cat:
         conds.append(t.c.task_category == cat)
+    if openOnly:
+        conds.append(t.c.status.in_(["PENDING", "RETURNED"]))
     if status:
         conds.append(t.c.status == status)
     if scope:
@@ -234,7 +246,12 @@ async def do_action(req: ApprovalAction):
         task_ref = row[0]
     # 动作键统一转小写（前端发 APPROVE/REJECT/RETURN/ESCALATE/MERGE/EXCLUDE/CREATE_NEW）
     action = (req.action or "").strip().lower()
-    result = await svc.do_action(task_ref, action, req.actor, req.opinion or "", req.role)
+    try:
+        result = await svc.do_action(task_ref, action, req.actor, req.opinion or "", req.role)
+    except RuntimeError as e:
+        # 业务拒绝（已办结重复审批 / 跨BU重复越权定案等）按业务错误回传，
+        # 前端可直接把 msg 展示给操作人，而不是吞成 500 Internal Server Error
+        return R.fail(str(e), code=400)
     return R.ok(result, msg="审批完成")
 
 

@@ -42,7 +42,10 @@
       <!-- 左列表 + 右侧只读速览：点行看概要，「进入审批」打开宽弹窗完成审批操作 -->
       <div class="ap-layout">
       <div class="ap-list">
-        <div class="ap-list-title">{{ tabLabel }}</div>
+        <div class="ap-list-title">
+          {{ tabLabel }}
+          <span class="ap-list-tip">点击任务行查看概要，点右侧「进入审批」办理</span>
+        </div>
           <el-table
             v-loading="loading"
             ref="tableRef"
@@ -56,9 +59,20 @@
             :row-style="{ cursor: 'pointer' }"
             :empty-text="loadError ? '加载失败，请点击上方「重新加载」' : loading ? '正在加载待办队列…' : '暂无数据'"
             @current-change="onRowSelect"
+            @row-click="onRowSelect"
           >
             <!-- 任务编号：业务主键，固定单行显示（折行会让整表行高参差），超长时省略号 + hover 查看 -->
             <el-table-column label="任务编号" prop="taskId" width="168" show-overflow-tooltip />
+            <!--
+              状态列：待办页签（审批任务 / 治理复核）只含未闭环任务，但
+              「全部待办」同时含「待审批」与「已退回」两类，二者处置方式不同
+              （前者直接审批，后者等申请人补充材料后重新提交），必须显性区分。
+            -->
+            <el-table-column label="状态" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="rowStatusTag(row.status)" effect="plain">{{ rowStatusText(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
             <!-- One ID 列已移除：批次/合并任务该列为空易误读，One ID 统一在右侧详情头部展示 -->
             <!--
               客户/主题：同一统一社会信用代码下若还有其它「在途申请」，在名称右侧显性标注。
@@ -113,6 +127,8 @@
               <h3 class="ap-detail-name">{{ detail.name }}</h3>
               <div class="ap-detail-meta">
                 <div class="ap-detail-tags">
+                  <!-- 状态置顶：终态任务的按钮区为空是刻意的（已办结不可再审），必须先看到状态再往下看 -->
+                  <el-tag size="small" :type="rowStatusTag(detail.status)" effect="dark">{{ rowStatusText(detail.status) }}</el-tag>
                   <el-tag v-if="detail.oneId" size="small" type="success" effect="dark">One ID：{{ detail.oneId }}</el-tag>
                   <!-- 批次级审批：批量导入确认以「批次号」为全链路业务主键，One ID 在批准后按行生成 -->
                   <el-tag v-if="detail.bizId" size="small" type="info" effect="plain">批次号：{{ detail.bizId }}</el-tag>
@@ -154,8 +170,23 @@
               </div>
             </div>
             <div class="ap-quick-foot">
-              <span class="ap-quick-hint">完整治理证据（字段级对比）与审批动作请在审批弹窗中查看操作</span>
-              <el-button type="primary" icon="EditPen" :disabled="!detail" @click="openApproval">进入审批</el-button>
+              <!--
+                动作区按状态分流：未闭环任务给「进入审批」；已办结任务后端不下发任何动作，
+                若还摆一个「进入审批」按钮，点进去就是空白动作区——正是「点进去没有审批按钮」
+                的来源。此处改为直接说明状态 + 改走流程跟踪看处理过程。
+              -->
+              <template v-if="hasActions">
+                <span class="ap-quick-hint">完整治理证据（字段级对比）与审批动作请在审批弹窗中查看操作</span>
+                <el-button type="primary" icon="EditPen" @click="openApproval">进入审批</el-button>
+              </template>
+              <template v-else>
+                <span class="ap-quick-hint is-closed">
+                  该任务当前状态为「{{ rowStatusText(detail.status) }}」，无可执行动作
+                  <template v-if="detail.finishTime">（{{ detail.finishTime }} 办结）</template>
+                </span>
+                <!-- 已办结仍要看完整治理证据：弹窗保留为只读详情，只是动作区换成状态说明 -->
+                <el-button plain icon="View" @click="openApproval">查看详情</el-button>
+              </template>
             </div>
           </template>
           <el-empty v-else description="选择左侧任务查看概要" />
@@ -169,6 +200,8 @@
               <h3 class="ap-detail-name">{{ detail.name }}</h3>
               <div class="ap-detail-meta">
                 <div class="ap-detail-tags">
+                  <!-- 状态置顶：终态任务的按钮区为空是刻意的（已办结不可再审），必须先看到状态再往下看 -->
+                  <el-tag size="small" :type="rowStatusTag(detail.status)" effect="dark">{{ rowStatusText(detail.status) }}</el-tag>
                   <el-tag v-if="detail.oneId" size="small" type="success" effect="dark">One ID：{{ detail.oneId }}</el-tag>
                   <!-- 批次级审批：批量导入确认以「批次号」为全链路业务主键，One ID 在批准后按行生成 -->
                   <el-tag v-if="detail.bizId" size="small" type="info" effect="plain">批次号：{{ detail.bizId }}</el-tag>
@@ -214,12 +247,17 @@
               </div>
 
               <h4>治理证据</h4>
-              <!-- 疑似/精准重复：字段级命中高亮对比（借鉴 DCR Matching Review） -->
-              <div v-if="candidateCompare.length" class="ap-cand">
+              <!-- 疑似/精准重复：字段级命中高亮对比（借鉴 DCR Matching Review）；
+                   无可比数据时整块隐藏，退回下方纯文本证据列表 -->
+              <div v-if="hasCompare" class="ap-cand">
                 <div class="ap-cand-head">
                   <el-tag size="small" type="success" effect="dark">命中候选：{{ candOneId }}</el-tag>
                   <el-tag v-if="candCrossBu" size="small" type="danger" effect="plain">跨 BU</el-tag>
-                  <span class="ap-cand-hint">确认关联后，本申请将转为对该 One ID 主档的更新，不再新建客户</span>
+                  <span v-if="isInFlightCand" class="ap-cand-hint is-warn">
+                    命中候选是<b>尚未审批完成的在途申请</b>（库里暂无该主体的已发布主档）：
+                    不能「关联已有主档」，处置为撤回本单 / 确认为不同主体继续新建 / 退回修正
+                  </span>
+                  <span v-else class="ap-cand-hint">确认关联后，本申请将转为对该 One ID 主档的更新，不再新建客户</span>
                 </div>
                 <div class="ap-cmp-head">
                   <span>对比字段</span>
@@ -247,23 +285,51 @@
                 <span v-else>{{ detail.evidence }}</span>
               </div>
 
-              <h4>审批意见</h4>
-              <el-input v-model="comment" type="textarea" :rows="2" placeholder="请输入审批意见或升级原因" />
-
-              <div class="ap-actions">
-                <el-button
-                  v-for="act in detail.actions"
-                  :key="act.key"
-                  :type="act.type"
-                  :loading="submitting"
-                  @click="onAction(act)"
-                >
-                  {{ act.label }}
-                </el-button>
-              </div>
             </div>
           </template>
           <div v-else v-loading="true" class="ap-dlg-loading" element-loading-text="加载审批详情…" />
+
+          <!--
+            动作区常驻弹窗底部（sticky footer），不再跟在长内容的最末尾。
+            原来「审批意见 + 动作按钮」排在治理证据之后，证据区一长就必须滚到弹窗底部
+            才看得到按钮，第一眼的观感就是「点进去没有审批按钮」；审批的主操作不该藏在滚动区里。
+            已办结任务后端不下发动作，这里改为状态说明 + 处理过程入口，把「为什么没有按钮」讲明白。
+          -->
+          <template #footer>
+            <div v-if="detail" class="ap-dlg-foot">
+              <template v-if="hasActions">
+                <el-input
+                  v-model="comment"
+                  class="ap-foot-comment"
+                  type="textarea"
+                  :rows="2"
+                  resize="none"
+                  placeholder="请输入审批意见（可选，将写入审批轨迹）"
+                />
+                <div class="ap-actions">
+                  <el-button
+                    v-for="act in detail.actions"
+                    :key="act.key"
+                    :type="act.type"
+                    :loading="submitting"
+                    @click="onAction(act)"
+                  >
+                    {{ act.label }}
+                  </el-button>
+                </div>
+              </template>
+              <div v-else class="ap-foot-closed">
+                <el-tag :type="rowStatusTag(detail.status)" effect="dark">{{ rowStatusText(detail.status) }}</el-tag>
+                <span class="ap-foot-closed-text">
+                  该任务已办结，不再提供审批动作
+                  <template v-if="detail.submitTime">｜提交 {{ detail.submitTime }}</template>
+                  <template v-if="detail.finishTime">｜办结 {{ detail.finishTime }}</template>
+                  <template v-if="detail.opinion">｜意见：{{ detail.opinion }}</template>
+                </span>
+                <el-button plain icon="Share" @click="onOpenFlowTrace">查看处理过程</el-button>
+              </div>
+            </div>
+          </template>
       </el-dialog>
     </el-card>
   </section>
@@ -310,6 +376,29 @@ const RISK_MAP: Record<string, { type: 'danger' | 'warning' | 'info' }> = {
 };
 
 /**
+ * 任务状态 → 展示文案 / 标签色
+ *
+ * 为什么列表与详情都必须显性展示状态：
+ * 「全部待办」同时含待审批（PENDING）与已退回（RETURNED）两类未闭环任务，
+ * 而「审批任务 / 治理复核」页签只按建表分类取未闭环，不显示状态时用户无法解释
+ * 为什么同一条数据在不同页签下的条数不一样；已办结（APPROVED / COMPLETED /
+ * REJECTED / CANCELLED）的任务动作按钮为空是**设计如此**（不能二次审批），
+ * 必须靠状态说明，而不是给一个空白动作区让人猜。
+ */
+const STATUS_MAP: Record<string, { text: string; type: 'primary' | 'success' | 'warning' | 'danger' | 'info' }> = {
+  DRAFT: { text: '草稿', type: 'info' },
+  PENDING: { text: '待审批', type: 'warning' },
+  ESCALATED: { text: '已升级', type: 'warning' },
+  RETURNED: { text: '已退回', type: 'danger' },
+  APPROVED: { text: '已批准', type: 'success' },
+  COMPLETED: { text: '已办结', type: 'success' },
+  REJECTED: { text: '已拒绝', type: 'info' },
+  CANCELLED: { text: '已取消', type: 'info' }
+};
+const rowStatusText = (status?: string) => STATUS_MAP[(status ?? '').toUpperCase()]?.text ?? (status || '—');
+const rowStatusTag = (status?: string) => STATUS_MAP[(status ?? '').toUpperCase()]?.type ?? 'info';
+
+/**
  * 页签 → 后端队列分类
  *
  * 每个页签各查各的分类，前端不再按中文 taskType 文本做业务过滤：
@@ -346,6 +435,8 @@ const activeTab = ref<(typeof TABS)[number]['key']>('all');
 const detailOpen = ref(false);
 const selectedId = ref('');
 const selectedRow = ref<ApprovalTaskVO | null>(null);
+/** 正在取详情的任务号：current-change 与 row-click 可能对同一次点击双触发，用它防重入 */
+const loadingDetailId = ref('');
 const detail = ref<ApprovalTaskDetailVO | null>(null);
 /** 队列请求失败原因：非空时显性提示并可重试，避免 502 被读成「没有待办」（复测报告 BUG-01 观感来源） */
 const loadError = ref('');
@@ -374,11 +465,29 @@ const activeCategory = computed<ApprovalTaskCategory>(
  */
 const isBatch = computed(() => detail.value?.scene === 'IMPORT');
 
-/** 疑似/精准重复任务可发起客户合并（SUSPECTED → 跨BU治理；EXACT → 关联确认） */
+/**
+ * 疑似/精准重复任务可发起客户合并（SUSPECTED → 跨BU治理；EXACT → 关联确认）。
+ *
+ * 但**在途申请命中**不算：命中的是另一条尚未审批完成的申请，库里没有该主体的
+ * 已发布主档，「发起合并」的语义（并入已有 One ID）不成立，必须隐藏——
+ * 否则又回到「关联已有主档」的老路，与总设计在途处置（撤回 / 不同主体继续新建 / 退回）相悖。
+ * isInFlightCand 与后端 _is_in_flight_duplicate 同源判定（证据含「在途申请=是」或「命中来源=在途」）。
+ */
 const canMerge = computed(() => {
   const d = detail.value;
-  return !!d?.oneId && /SUSPECTED|EXACT|疑似|重复/i.test(d.duplicate ?? '');
+  return !!d?.oneId
+    && /SUSPECTED|EXACT|疑似|重复/i.test(d.duplicate ?? '')
+    && !isInFlightCand.value;
 });
+
+/**
+ * 当前任务是否仍有可执行动作。
+ *
+ * 终态任务（已批准 / 已拒绝 / 已办结 / 已取消）后端**按设计**不下发动作按钮——
+ * 已办结的业务不能再被二次审批。因此动作区必须按此分支渲染：
+ * 有动作 → 审批意见 + 动作按钮；无动作 → 状态说明，而不是一个空白区域。
+ */
+const hasActions = computed(() => (detail.value?.actions?.length ?? 0) > 0);
 /** 从审批详情直接打开合并申请弹窗（当前任务客户为合并源） */
 const onLaunchMerge = () => {
   if (detail.value?.oneId) openDialog('merge', { oneId: detail.value.oneId, name: detail.value.name });
@@ -454,17 +563,38 @@ const candidateCompare = computed<CandidateCompareRow[]>(() => {
     compareRow('来源系统', get('申请来源系统'), get('候选来源系统'))
   ];
 });
-/** 已进入候选对比的字段不再重复平铺 */
+/**
+ * 对比表是否真有可比数据。
+ * <p>
+ * 历史任务的 evidence 里没有成对的申请侧 / 候选侧字段，五行全是「（空）」——
+ * 摆一张全空的对比表比不摆更糟（看着像「证据齐全但字段缺失」）。
+ * 无可比数据时整块隐藏，退回纯文本证据列表。
+ */
+const hasCompare = computed(() => candidateCompare.value.some(row => row.incoming || row.existing));
+/** 已进入候选对比的字段不再重复平铺（无可比数据时不做过滤，避免关键键位被吃掉） */
 const evidenceRest = computed(() =>
-  candidateCompare.value.length ? evidenceRows.value.filter(row => !CAND_SIDE_KEYS.includes(row.label)) : evidenceRows.value
+  hasCompare.value ? evidenceRows.value.filter(row => !CAND_SIDE_KEYS.includes(row.label)) : evidenceRows.value
 );
 const candOneId = computed(() => {
   const map = new Map(evidenceRows.value.map(row => [row.label, row.value]));
   return map.get(CAND_ONE_ID_KEY) ?? '';
 });
+/**
+ * 命中的是「在途申请」而非已发布主档。
+ * <p>
+ * 两者处置完全不同：在途申请还不是主档，把它说成「关联后转为对该 One ID 主档的更新」
+ * 是错的——库里那条主档还不存在，正确处置是撤回本单 / 确认为不同主体 / 退回修正，
+ * 后端 _is_in_flight_duplicate 也是按这套动作下发的，提示文案必须跟上。
+ */
+const isInFlightCand = computed(() => {
+  const map = new Map(evidenceRows.value.map(row => [row.label, row.value]));
+  return (map.get('在途申请') ?? '').trim() === '是' || (map.get('命中来源') ?? '').includes('在途');
+});
 const candCrossBu = computed(() => {
   const map = new Map(evidenceRows.value.map(row => [row.label, row.value]));
-  return map.get('跨BU') === 'Y';
+  // 兼容两种写法：后端历史上写过「是/否」，判定口径与页面文案保持中文
+  const flag = (map.get('跨BU') ?? '').trim().toUpperCase();
+  return flag === 'Y' || flag === '是';
 });
 const CMP_FLAG_TEXT: Record<DuplicateFieldStatus, string> = { MATCH: '一致', DIFF: '不一致', EMPTY: '空缺' };
 const CMP_FLAG_TAG: Record<DuplicateFieldStatus, 'success' | 'danger' | 'info'> = {
@@ -517,13 +647,19 @@ const applyFilter = () => {
  */
 const onRowSelect = async (row: ApprovalTaskVO | null) => {
   if (!row) return;
+  // 同时挂了 current-change 与 row-click（点击任务行必须能展开右侧详情，测试报告 BUG-PY-02）。
+  // 两个事件在同一次点击里会先后触发，用「正在取详情的任务号」防重入，避免重复请求与闪烁。
+  if (loadingDetailId.value === row.taskId) return;
   selectedId.value = row.taskId;
   selectedRow.value = row;
   detail.value = null;
+  loadingDetailId.value = row.taskId;
   try {
     detail.value = await getApprovalTaskDetail(row.taskId);
   } catch (error) {
     ElMessage.error(`加载任务 ${row.taskId} 详情失败：${(error as Error)?.message ?? '未知错误'}`);
+  } finally {
+    loadingDetailId.value = '';
   }
 };
 

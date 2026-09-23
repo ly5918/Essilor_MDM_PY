@@ -17,8 +17,10 @@
           </el-tooltip>
           <el-breadcrumb class="crumb" separator="/">
             <el-breadcrumb-item>CMD POC</el-breadcrumb-item>
-          <el-breadcrumb-item v-if="currentSub">{{ currentSubLabel }}</el-breadcrumb-item>
-          <el-breadcrumb-item>{{ pageHeadTitle }}</el-breadcrumb-item>
+            <!-- 二级菜单子页：先显示父菜单（客户管理），末级用菜单名，避免与页面大标题重复 -->
+            <el-breadcrumb-item v-if="currentParentMenu">{{ currentParentMenu.label }}</el-breadcrumb-item>
+            <el-breadcrumb-item v-if="currentSub">{{ currentSubLabel }}</el-breadcrumb-item>
+            <el-breadcrumb-item>{{ currentParentMenu ? pageTitle : pageHeadTitle }}</el-breadcrumb-item>
           </el-breadcrumb>
         </div>
 
@@ -35,6 +37,13 @@
           </div>
           <div v-else-if="currentPage === 'customers' && roleKey === 'business'" class="page-title-actions">
             <el-button plain @click="openDialog('ocr')">查看OCR识别结果</el-button>
+            <el-button type="primary" plain icon="Plus" @click="openDialog('newCustomer')">新建客户</el-button>
+          </div>
+          <!--
+            处理中申请页同样保留写入口：业务用户常在这里发现「少填了要再提一家 / 还有客户没录」，
+            提交成功后会停在本页（新申请落在列表首行），不必再退回主档页找入口。
+          -->
+          <div v-else-if="currentPage === 'custapps' && roleKey === 'business'" class="page-title-actions">
             <el-button type="primary" plain icon="Plus" @click="openDialog('newCustomer')">新建客户</el-button>
           </div>
           <!-- 非 Business User 的客户页：不给写入口，用一行小字说明权限边界（测试报告 BUG-4） -->
@@ -79,7 +88,7 @@
         <PocTagsView @refresh="refreshPanel" />
 
         <!-- 页面面板：按当前角色菜单动态渲染 -->
-        <component :is="currentPanel" :key="`${currentPage}-${panelRefreshTick}`" />
+        <component :is="currentPanel" :key="`${currentPage}-${panelRefreshTick}`" v-bind="panelProps" />
       </main>
     </div>
 
@@ -123,7 +132,7 @@ defineOptions({ name: 'CmdPoc' });
 
 const props = defineProps<{ defaultRole?: RoleKey }>();
 
-const { role, roleKey, currentPage, currentSub, currentMenu, pageTitle, readOnly, openDialog, goMenu, publishMetadata, sidebarCollapsed, toggleSidebar, loadCustomers, loadMetadataFields } = createCmdPoc(
+const { role, roleKey, currentPage, currentSub, currentMenu, currentParentMenu, pageTitle, readOnly, openDialog, goMenu, publishMetadata, sidebarCollapsed, toggleSidebar, loadCustomers, loadMetadataFields } = createCmdPoc(
   (props.defaultRole ?? 'business') as RoleKey
 );
 
@@ -136,6 +145,8 @@ const onPublishMetadata = async () => {
 const PANEL_MAP: Record<PageId, Component> = {
   dash: DashPanel,
   customers: CustomersPanel,
+  /** 与 customers 同一个面板：靠 panelProps 传入初始视图（处理中申请），不另写一份列表代码 */
+  custapps: CustomersPanel,
   batch: BatchPanel,
   gov: GovernancePanel,
   hier: HierarchyPanel,
@@ -153,6 +164,12 @@ const PANEL_MAP: Record<PageId, Component> = {
 };
 
 const currentPanel = computed(() => PANEL_MAP[currentPage.value] ?? DashPanel);
+
+/**
+ * 面板入参：CustomersPanel 承载两个菜单页，用页面 id 决定初始视图。
+ * 切换菜单（而不是页内 tab）时，`component` 的 key 变化会重建面板，视图随之切换。
+ */
+const panelProps = computed(() => (currentPage.value === 'custapps' ? { defaultView: 'inFlight' as const } : {}));
 
 /** 标签栏刷新当前面板计数 */
 const panelRefreshTick = ref(0);

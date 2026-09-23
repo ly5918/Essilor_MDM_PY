@@ -67,7 +67,11 @@ async def application_stats():
 
 @router.post("")
 async def create_customer(payload: CustomerSubmit):
-    result = await svc.submit_customer(payload)
+    """提交新建申请：必填校验失败按业务错误回 400（BUG-PY-04）。"""
+    try:
+        result = await svc.submit_customer(payload)
+    except ValueError as e:
+        return R.fail(str(e), code=400)
     return R.ok(result, msg="提交成功，已启动审批流程")
 
 

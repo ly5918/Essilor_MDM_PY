@@ -98,6 +98,7 @@ import type {
   ImportRowVO,
   ImportStatsVO,
   ImportTemplateVO,
+  ImportTemplateSaveForm,
   ImportUploadForm,
   IntegrationConnForm,
   IntegrationRunVO,
@@ -967,6 +968,7 @@ export const listImportTemplates = async (): Promise<ImportTemplateVO[]> => {
   if (!useLive('import')) return delay(mock.mockImportTemplates);
   const rows = await unwrap<CmdImportTemplateRow[]>(request({ url: '/cmd/import/template/list', method: 'get' }));
   return (rows ?? []).map(row => ({
+    id: row.id,
     templateCode: row.templateCode ?? '',
     name: row.templateName ?? '',
     context: row.scene ?? '',
@@ -1058,6 +1060,40 @@ export const saveTemplateMapping = async (form: TemplateMappingSaveForm): Promis
 export const deleteTemplateMapping = async (id: number | string): Promise<string> => {
   if (!useLive('import')) return delay('演示模式：字段已移除');
   return unwrap<string>(request({ url: `/cmd/import/template/mapping/${id}`, method: 'delete' }));
+};
+
+/**
+ * 新建 / 编辑导入模板（平台管理 › 导入Template）
+ * <p>业务上下文（场景 / BU / 客户类型 / 产品线 / 来源系统）是模板的定位维度，
+ * 与「下载模板」弹窗的 4 个下拉同口径；模板编码留空时后端自动生成。
+ * 全新部署无模板数据时，管理员可直接在 UI 建模板，无需开发预置 SQL。</p>
+ */
+export const saveImportTemplate = async (form: ImportTemplateSaveForm): Promise<string> => {
+  if (!useLive('import')) {
+    return delay(form.id ? `演示模式：模板「${form.templateName}」已更新` : `演示模式：模板「${form.templateName}」已新建`);
+  }
+  return unwrap<string>(request({ url: '/cmd/import/template', method: 'post', data: form }));
+};
+
+/** 发布 / 停用导入模板（发布前后端校验主键字段映射 legal_name / credit_code） */
+export const setImportTemplateStatus = async (
+  templateCode: string,
+  status: 'Published' | 'Draft'
+): Promise<string> => {
+  if (!useLive('import')) {
+    return delay(`演示模式：模板 ${templateCode} 已${status === 'Published' ? '发布' : '停用'}`);
+  }
+  return unwrap<string>(
+    request({ url: '/cmd/import/template/status', method: 'post', data: { templateCode, status } })
+  );
+};
+
+/** 一键补齐主键字段映射（客户法定名称 / 统一社会信用代码）——模板发布的前置条件 */
+export const fillCoreTemplateMappings = async (templateCode: string): Promise<string> => {
+  if (!useLive('import')) return delay('演示模式：已补齐主键字段（客户法定名称 / 统一社会信用代码）');
+  return unwrap<string>(
+    request({ url: '/cmd/import/template/core-mapping', method: 'post', data: { templateCode } })
+  );
 };
 
 
@@ -1423,21 +1459,28 @@ export const getUnassignedNodes = async (query?: {
 
 /** 层级归位：把待归位主数据挂到目标父节点之下（服务端做 Loop Check + 级别推导 + 路径重建） */
 export const assignHierarchyNode = async (data: HierarchyAssignForm): Promise<string> => {
-  if (!useLive('hierarchy')) return delay(`归位完成：${data.oneId} 已挂到 ${data.parentId} 之下`);
+  // root=true：没有父节点，把客户登记为顶级 A3 集团节点（系统刚上线时建第一个根）
+  const asRoot = data.root === true || !data.parentId;
+  if (!useLive('hierarchy')) {
+    return delay(asRoot ? `顶级节点已建立：${data.oneId}` : `归位完成：${data.oneId} 已挂到 ${data.parentId} 之下`);
+  }
   await unwrap(
     request({
       url: '/cmd/hierarchy/assign',
       method: 'post',
       data: {
         oneId: data.oneId,
-        parentOneId: data.parentId,
+        parentOneId: asRoot ? '' : data.parentId,
+        root: asRoot,
         changeReason: data.changeReason,
         remark: data.remark
       }
     })
   );
-  return '归位完成，节点已进入 A3-A2-A1 层级树';
-};
+  return asRoot
+    ? '顶级节点已建立，已登记为 A3 集团（第 1 级）'
+    : '归位完成，节点已进入 A3-A2-A1 层级树';
+};;
 
 export const loopCheck = (): Promise<string> =>
   USE_MOCK
@@ -1846,17 +1889,36 @@ function toApprovalTaskVO(row: CmdApprovalTaskRow): ApprovalTaskVO {
     detailType: row.bizType ?? '',
     // 同主体在途申请：服务端跨队列计算，必须显式搬运（白名单映射，漏掉会静默不渲染）
     dupInFlight: row.dupPeerInFlight ?? 0,
-    dupPeerSummary: row.dupPeerSummary ?? ''
+    dupPeerSummary: row.dupPeerSummary ?? '',
+    // 任务状态：待办视图的「状态」列数据源（待审批 / 已退回 / 已办结…）
+    status: row.status ?? ''
   };
 }
 
-/** 按分类拉取清单（后端以 taskCategory 区分队列表） */
-async function fetchTasksByCategory(scope: 'bu' | 'gc', category: string, pageNum = 1, pageSize = 10): Promise<PageResult<ApprovalTaskVO>> {
+/**
+ * 按分类拉取清单（后端以 taskCategory 区分队列表）
+ *
+ * 分页参数名为 page / size（该接口口径），不是通用的 pageNum / pageSize——
+ * 传错名字后端会静默用默认值（第 1 页 / 20 条），表现为「翻页没反应、每页固定 20 条」。
+ */
+async function fetchTasksByCategory(
+  scope: 'bu' | 'gc',
+  category: string,
+  pageNum = 1,
+  pageSize = 10,
+  openOnly = false
+): Promise<PageResult<ApprovalTaskVO>> {
   const page = await unwrap<PageResult<CmdApprovalTaskRow>>(
     request({
       url: '/cmd/approval/list',
       method: 'get',
-      params: { scope: scope.toUpperCase(), taskCategory: category, pageNum, pageSize }
+      params: {
+        scope: scope.toUpperCase(),
+        taskCategory: category,
+        openOnly,
+        page: pageNum,
+        size: pageSize
+      }
     })
   );
   return {
@@ -1904,8 +1966,8 @@ export const listApprovalTasks = async (scope: 'bu' | 'gc', pageNum = 1, pageSiz
  *
  * 分类口径：
  * - ALL        全部待办：状态为 PENDING / RETURNED 的全部未闭环任务（不按建表分类过滤）
- * - APPROVAL   审批任务
- * - GOVERNANCE 治理复核
+ * - APPROVAL   审批任务：**只取未闭环**（openOnly），否则会把已办结的历史审批一起列出来
+ * - GOVERNANCE 治理复核：同上，只取未闭环
  * - RETURNED   升级与退回：按「状态 = RETURNED」取（退回是状态，不是建表分类）
  * - DONE       我已处理：终态
  *
@@ -1913,7 +1975,14 @@ export const listApprovalTasks = async (scope: 'bu' | 'gc', pageNum = 1, pageSiz
  * 导致审批类任务一满页时治理复核 / 退回任务永远看不到，且 total 是三类相加、rows 只有一页（翻页丢数据）；
  * 也曾尝试在前端按中文 taskType 文本过滤，后端新增业务类型时任务会「静默消失」。
  * 现在每个页签各查各的分类，前端不做业务过滤，口径与后端完全一致。
+ *
+ * 「审批任务 / 治理复核」是否只看未闭环，是**队列语义**问题而非筛选问题：
+ * 一个待办队列里混进已办结任务，就会出现「全部待办 2 条、审批任务 3 条」这类
+ * 同一批数据条数打架，且点进去的详情按终态返回空动作按钮（页面上表现为「没有审批按钮」）。
+ * 需要看已办结的审批历史，走「我已处理」页签。
  */
+const OPEN_ONLY_CATEGORIES: ApprovalTaskCategory[] = ['APPROVAL', 'GOVERNANCE'];
+
 export const listApprovalTasksByCategory = async (
   scope: 'bu' | 'gc',
   category: ApprovalTaskCategory,
@@ -1921,7 +1990,7 @@ export const listApprovalTasksByCategory = async (
   pageSize = 10
 ): Promise<PageResult<ApprovalTaskVO>> => {
   if (!useLive('approval')) return delay({ rows: mock.mockApprovalTasks[scope], total: mock.mockApprovalTasks[scope].length });
-  return fetchTasksByCategory(scope, category, pageNum, pageSize);
+  return fetchTasksByCategory(scope, category, pageNum, pageSize, OPEN_ONLY_CATEGORIES.includes(category));
 };
 
 export const getApprovalReturned = async (scope: 'bu' | 'gc'): Promise<ApprovalTaskVO[]> => {
@@ -1952,6 +2021,14 @@ export const getApprovalTaskDetail = async (taskNo: string): Promise<ApprovalTas
     duplicate: vo.duplicate ?? '',
     evidence: vo.evidence ?? '',
     decisions: vo.decisions ?? [],
+    // 状态与办结信息：终态任务 actions 为空，前端要用这些字段替代动作区给出解释
+    status: vo.status ?? '',
+    statusText: vo.statusText ?? '',
+    closed: vo.closed ?? false,
+    handler: vo.handler ?? '',
+    submitTime: vo.submitTime ?? '',
+    finishTime: vo.finishTime ?? '',
+    opinion: vo.opinion ?? '',
     actions: (vo.actions ?? []).map(a => ({
       key: a.key ?? '',
       label: a.label ?? '',
@@ -2007,7 +2084,9 @@ const mapGraph = (g?: FlowTraceVO['graph'] & {
       note: n.note,
       x: n.x ?? 0,
       y: n.y ?? 0,
-      status: (['COMPLETED', 'CURRENT', 'PENDING'].includes(n.status ?? '')
+      // 状态白名单必须与后端 swimlane 的步骤状态全集一致：
+      // 漏掉 RETURNED / TERMINATED 会被静默降级成「待执行」（退回节点看不出来）
+      status: (['COMPLETED', 'CURRENT', 'RETURNED', 'PENDING', 'TERMINATED'].includes(n.status ?? '')
         ? n.status
         : 'PENDING') as FlowGraphNodeVO['status'],
       approver: n.approver,
@@ -2036,7 +2115,7 @@ export const getFlowTrace = async (taskNo: string, detailType = 'create'): Promi
     nodeType: (['AUTO', 'MANUAL', 'GATEWAY'].includes(s.nodeType ?? '')
       ? s.nodeType
       : 'AUTO') as FlowTraceVO['steps'][number]['nodeType'],
-    status: (['COMPLETED', 'CURRENT', 'PENDING', 'TERMINATED'].includes(s.status ?? '')
+    status: (['COMPLETED', 'CURRENT', 'RETURNED', 'PENDING', 'TERMINATED'].includes(s.status ?? '')
       ? s.status
       : 'PENDING') as FlowTraceVO['steps'][number]['status'],
     assignee: s.assignee,
@@ -2052,6 +2131,8 @@ export const getFlowTrace = async (taskNo: string, detailType = 'create'): Promi
     sceneCode: vo.sceneCode ?? '',
     sceneName: vo.sceneName ?? '',
     status: vo.status ?? '',
+    /** 已退回标记（后端 is_returned 判定）：驱动「本单已退回」提示条 */
+    returned: vo.returned ?? false,
     currentNodeName: vo.currentNodeName ?? '',
     assigneeName: vo.assigneeName,
     assigneeRole: vo.assigneeRole,

@@ -161,6 +161,10 @@ for _m in (customer, approval, dashboard, metadata_api, duplication, change,
            hierarchy, audit, permission, coverage, ocr, integration):
     app.include_router(_m.router)
 
+# 兼容别名路由（如 /cmd/template/list → /cmd/import/template/list），不进入 OpenAPI 文档
+if getattr(import_api, "compat_router", None) is not None:
+    app.include_router(import_api.compat_router)
+
 
 @app.on_event("startup")
 async def _startup():

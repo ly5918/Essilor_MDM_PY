@@ -223,6 +223,16 @@ export type RoleKey = 'business' | 'bu' | 'gc' | 'admin' | 'audit';
 export type PageId =
   | 'dash'
   | 'customers'
+  /**
+   * 客户管理 › 处理中申请：尚未审批完成的客户申请单。
+   *
+   * 为什么单开一个 PageId 而不是在「客户管理」页里做分段切换：
+   * 申请态记录在「已生效主档」里**永远查不到**（服务端列表口径不同），
+   * 用页内 tab 切换等于把「另一个查询入口」藏起来 ——
+   * 业务用户提交完申请后，看到的主档列表里没有自己刚提交的那条，会以为没提交成功。
+   * 拆成独立菜单后：提交成功即跳本页、菜单角标常驻在途数，「我提交的东西在哪」不再靠猜。
+   */
+  | 'custapps'
   | 'batch'
   | 'gov'
   | 'hier'
@@ -961,6 +971,8 @@ export interface BatchResultVO {
 
 /** 导入模板（下载模板弹窗使用，维度与原型 4 个下拉一致） */
 export interface ImportTemplateVO {
+  /** 模板主键（编辑业务上下文时用） */
+  id?: number;
   /** 模板编码：下载时用于定位模板 */
   templateCode: string;
   name: string;
@@ -1016,6 +1028,28 @@ export interface TemplateMappingVO {
   defaultValue?: string;
   transform: string;
   errorStrategy: string;
+}
+
+/** 导入模板新建 / 编辑表单（平台管理 › 导入Template：按业务上下文建模板） */
+export interface ImportTemplateSaveForm {
+  /** 模板主键（编辑时非空） */
+  id?: number | string;
+  /** 模板编码：留空时后端按业务上下文自动生成（如 TPL_DOOR_HIGHEND_FRAME） */
+  templateCode?: string;
+  templateName: string;
+  /** 业务场景：DOOR / PAYER */
+  scene: string;
+  /** 归属 BU：High End / Mainstream */
+  buScope?: string;
+  /** 客户类型：Door / Payer / A1 / A2 / A3 */
+  customerType?: string;
+  /** 产品线：Lens / Frame */
+  productLine?: string;
+  /** 来源系统：DMS+ / Cloud */
+  sourceSystem?: string;
+  /** 模板版本，如 v1 */
+  versionNo?: string;
+  remark?: string;
 }
 
 /** 导入模板字段映射保存表单（平台管理 › 导入Template；id 非空 = 编辑） */
@@ -1263,6 +1297,8 @@ export interface HierarchyValidateForm {
   relationType?: string;
   payerOneId?: string;
   changeReason?: string;
+  /** 顶级节点场景（系统刚上线的首个 A3 集团）：无父节点，按 A3 推导 */
+  root?: boolean;
 }
 
 /** 增加子节点入参（落库） */
@@ -1338,11 +1374,13 @@ export interface HierarchyUnassignedVO {
 export interface HierarchyAssignForm {
   /** 待归位客户 One ID */
   oneId: string;
-  /** 目标父节点 One ID */
+  /** 目标父节点 One ID；root=true 时可为空字符串（建立顶级节点） */
   parentId: string;
   /** 变更原因 */
   changeReason: string;
   remark?: string;
+  /** true = 作为顶级节点（A3 集团）登记，系统刚上线时用它建第一个根节点 */
+  root?: boolean;
 }
 
 /** ------------------------------------------------------------------
@@ -1764,6 +1802,13 @@ export interface ApprovalTaskVO {
   dupInFlight?: number;
   /** 重复核验：同主体其它在途申请摘要（One ID · 节点 · 申请编号），供悬浮提示 */
   dupPeerSummary?: string;
+  /**
+   * 任务状态（PENDING 待审批 / RETURNED 已退回 / COMPLETED 已办结…）。
+   * <p>
+   * 待办类页签（审批任务 / 治理复核）只返回未闭环任务，已办结记录在「我已处理」；
+   * 列表必须把这列显性展示，否则同一批数据在不同页签条数不同时无法自证。
+   */
+  status?: string;
 }
 
 /** 任务详情（右侧面板） */
@@ -1788,13 +1833,33 @@ export interface ApprovalTaskDetailVO {
   decisions: string[];
   /** 操作按钮组 */
   actions: Array<{ key: string; label: string; type: 'primary' | 'success' | 'warning' | 'danger' | 'info' }>;
+  /**
+   * 任务状态与办结信息。
+   * <p>
+   * 终态任务（已批准 / 已拒绝 / 已办结 / 已取消）的 actions 恒为空——这是刻意的：
+   * 已办结的任务不能再被审批。但页面必须把「为什么没有按钮」讲清楚，
+   * 所以状态、办结时间、最新意见都要下发，供详情页替代动作区展示。
+   */
+  status?: string;
+  /** 状态中文（待审批 / 已退回 / 已办结…） */
+  statusText?: string;
+  /** 是否已办结（终态） */
+  closed?: boolean;
+  /** 当前处理人 */
+  handler?: string;
+  /** 提交时间 */
+  submitTime?: string;
+  /** 办结时间（未办结为空） */
+  finishTime?: string;
+  /** 最新审批意见 */
+  opinion?: string;
 }
 
 /** ------------------------------------------------------------------
  * 8.2 流程跟踪（泳道图步骤条 + Warm-Flow 实例进度，参考 HCP Merge 流程跟踪视图）
  * ------------------------------------------------------------------ */
-/** 步骤执行状态 */
-export type FlowStepStatus = 'COMPLETED' | 'CURRENT' | 'PENDING' | 'TERMINATED';
+/** 步骤执行状态。RETURNED＝走过但被退回作废（需重做），与「已终止」不同：实例仍在运行 */
+export type FlowStepStatus = 'COMPLETED' | 'CURRENT' | 'RETURNED' | 'PENDING' | 'TERMINATED';
 
 /** 泳道图单步骤（场景模板 + 实时轨迹合并） */
 export interface FlowTraceStepVO {
@@ -1878,7 +1943,7 @@ export interface FlowGraphNodeVO {
   note?: string;
   x: number;
   y: number;
-  status: 'COMPLETED' | 'CURRENT' | 'PENDING' | 'TERMINATED';
+  status: FlowStepStatus;
   approver?: string;
   actionTime?: string;
 }
@@ -2175,6 +2240,8 @@ export interface FlowTraceVO {
   sceneCode: string;
   sceneName: string;
   status: string;
+  /** 已退回：实例被打回上游，下游节点完成度作废（前端据此提示「需重做」） */
+  returned?: boolean;
   currentNodeName: string;
   assigneeName?: string;
   assigneeRole?: string;
@@ -2441,6 +2508,16 @@ export interface CmdApprovalDetailRow {
   evidence?: string;
   decisions?: string[];
   actions?: Array<{ key?: string; label?: string; type?: string }>;
+  /** 任务状态（PENDING / RETURNED / COMPLETED…） */
+  status?: string;
+  /** 状态中文 */
+  statusText?: string;
+  /** 是否已办结（终态，actions 为空） */
+  closed?: boolean;
+  handler?: string;
+  submitTime?: string;
+  finishTime?: string;
+  opinion?: string;
 }
 
 /** 后端流程跟踪（对应 CmdFlowTraceVo，字段均为可选） */

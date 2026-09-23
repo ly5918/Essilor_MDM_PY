@@ -26,6 +26,18 @@ FINAL_OK_STATUS = {"APPROVED", "COMPLETED"}
 FINAL_STOP_STATUS = {"REJECTED", "CANCELLED"}
 FINAL_STATUSES = FINAL_OK_STATUS | FINAL_STOP_STATUS
 
+# ---------------- 步骤状态（与前端 FlowSwimlane / FlowTraceDetail 状态映射一一对应） ----------------
+STEP_COMPLETED = "COMPLETED"    # 已完成（绿色）
+STEP_CURRENT = "CURRENT"        # 进行中（蓝色）
+STEP_RETURNED = "RETURNED"      # 已退回（琥珀色）：走过又被退回作废，需重做
+STEP_TERMINATED = "TERMINATED"  # 已终止（红色）
+STEP_PENDING = "PENDING"        # 待执行（灰色）
+
+# 「退回类」任务状态：流程被打回上游，工作停留在退回目标节点
+RETURNED_STATUSES = {"RETURNED", "REWORK", "BACK", "SENT_BACK"}
+# 会把申请打回上游的动作类型（cmd_approval_action.action_type）
+RETURN_ACTION_TYPES = {"RETURN", "REJECT", "SEND_BACK", "REWORK"}
+
 # 泳道图定义视图布局参数（阶段分列 × 泳道分行）
 BASE_X = 300
 COL_GAP = 168
@@ -205,7 +217,7 @@ def build_swimlane(scene_code: str) -> list[dict]:
         steps.append({
             "order": i, "phase": phase, "phaseName": phase_name, "lane": lane,
             "nodeCode": code, "nodeName": name, "nodeType": ntype,
-            "note": note, "status": "PENDING",
+            "note": note, "status": STEP_PENDING,
             "operator": None, "actionTime": None, "opinion": None, "assignee": None,
         })
     return steps
@@ -259,16 +271,60 @@ def resolve_current_node(task_status: Optional[str], current_node_name: Optional
     return NODE_APPLY
 
 
+def is_returned(task_status: Optional[str], current_node_name: Optional[str] = None,
+                actions: Optional[list] = None) -> bool:
+    """任务是否处于「已退回」状态（状态字段 / 当前节点名 / 轨迹里的退回动作任一命中）。
+
+    退回与「已终止」不同：终止是终态、后续节点作废；退回是流程回到上游重做，
+    后续节点的完成度同样作废，但实例仍在运行。
+    """
+    if (task_status or "").upper() in RETURNED_STATUSES:
+        return True
+    if "退回" in (current_node_name or ""):
+        return True
+    for a in actions or []:
+        if str(a.get("action_type") or "").upper() in RETURN_ACTION_TYPES:
+            return True
+        if "退回" in str(a.get("action_name") or ""):
+            return True
+    return False
+
+
+def return_source_node(actions: Optional[list]) -> Optional[str]:
+    """退回动作的发起节点编码（泳道图「退回」箭头起点）；无退回动作返回 None。"""
+    src: Optional[str] = None
+    for a in actions or []:
+        is_back = (str(a.get("action_type") or "").upper() in RETURN_ACTION_TYPES
+                   or "退回" in str(a.get("action_name") or ""))
+        if is_back:
+            src = a.get("from_node_code") or a.get("to_node_code") or src
+    return src
+
+
 def apply_step_status(steps: list[dict], task_status: Optional[str],
                       current_node_name: Optional[str], touched_nodes: Optional[set] = None,
-                      current_node_code: Optional[str] = None) -> None:
-    """Java applyStepStatus：终态全亮 / 终止后续 TERMINATED / 当前 CURRENT / 已过 COMPLETED。"""
+                      current_node_code: Optional[str] = None,
+                      returned: Optional[bool] = None) -> str:
+    """Java applyStepStatus 的语义修正版，返回解析出的当前节点编码。
+
+    - 终态（APPROVED / COMPLETED）：全部 STEP_COMPLETED
+    - 终止态（REJECTED / CANCELLED）：当前节点之后 STEP_TERMINATED
+    - 进行中：当前节点 STEP_CURRENT、之前 STEP_COMPLETED、之后 STEP_PENDING
+    - **退回态**：当前节点 = 退回目标（STEP_CURRENT）。位于当前节点之后、却留有轨迹的
+      节点，说明「走到过但已被退回作废」，标 STEP_RETURNED 而不是绿色 STEP_COMPLETED——
+      原先一律标 COMPLETED 会出现「GC 决策已完成、创建客户申请却还在待办」的自相矛盾
+      （Java 原版同样存在该问题，Python 侧此处刻意修正）。
+    """
     if not steps:
-        return
+        return ""
     status = task_status or ""
     name = current_node_name or ""
     finished = status in FINAL_OK_STATUS or "已完成" in name
     stopped = status in FINAL_STOP_STATUS
+    if returned is None:
+        returned = is_returned(status, name)
+    if finished:
+        returned = False          # 终态优先：流程全部走完，不再有「已退回」
     current_code = resolve_current_node(status, name, current_node_code)
 
     current_idx = -1
@@ -280,17 +336,20 @@ def apply_step_status(steps: list[dict], task_status: Optional[str],
     for i, s in enumerate(steps):
         touched = touched_nodes is not None and s["nodeCode"] in touched_nodes
         if finished:
-            s["status"] = "COMPLETED"
+            s["status"] = STEP_COMPLETED
         elif stopped and current_idx >= 0 and i > current_idx:
-            s["status"] = "TERMINATED"
+            s["status"] = STEP_TERMINATED
         elif i == current_idx:
-            s["status"] = "CURRENT"
-        elif current_idx >= 0 and (i < current_idx or touched):
-            s["status"] = "COMPLETED"
-        elif current_idx < 0 and touched:
-            s["status"] = "COMPLETED"
+            s["status"] = STEP_CURRENT
+        elif i < current_idx:
+            s["status"] = STEP_COMPLETED
+        elif touched:
+            # 当前节点之后仍留有轨迹：正常流程下即「已走过」；
+            # 退回态下这些完成度已被撤回，改标「已退回」。
+            s["status"] = STEP_RETURNED if returned else STEP_COMPLETED
         else:
-            s["status"] = "PENDING"
+            s["status"] = STEP_PENDING
+    return current_code
 
 
 def step_shape(node_type: str, index: int, size: int) -> str:

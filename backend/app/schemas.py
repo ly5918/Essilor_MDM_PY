@@ -43,6 +43,10 @@ class CustomerSubmit(BaseModel):
     source_system: Optional[str] = "MANUAL"
     cross_bu: Optional[bool] = False
     remark: Optional[str] = None
+    # 提交人：审批详情「提交人」与流程跟踪「申请人」的数据源。
+    # 前端未传时后端回落到默认业务角色（Business User），避免该列恒显示「-」。
+    applicant_name: Optional[str] = None
+    applicant_id: Optional[int] = None
 
 
 class ApprovalAction(BaseModel):

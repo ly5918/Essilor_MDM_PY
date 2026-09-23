@@ -26,8 +26,16 @@
         </el-col>
         <el-col :span="12">
           <el-form-item label="导入模板" prop="templateCode">
-            <el-select v-model="form.templateCode" style="width: 100%" @change="onTemplateChange">
+            <el-select v-model="form.templateCode" style="width: 100%" @change="onTemplateChange"
+                       :placeholder="templates.length ? '请选择导入模板' : '暂无可用模板'">
               <el-option v-for="item in templates" :key="item.templateCode" :label="templateLabel(item)" :value="item.templateCode" />
+              <template #empty>
+                <div class="tpl-empty">
+                  {{ templateLoadFailed
+                    ? '模板加载失败：请关闭弹窗后重新打开重试'
+                    : '暂无已发布模板：请先在「平台管理 › 导入模板」发布模板' }}
+                </div>
+              </template>
             </el-select>
           </el-form-item>
         </el-col>
@@ -94,6 +102,8 @@ const SOURCE_SYSTEM_OPTIONS = ['DMS+', 'Cloud', 'SAP', 'EXCEL', 'Manual'];
 
 const formRef = ref<FormInstance>();
 const templates = ref<ImportTemplateVO[]>([]);
+/** 模板接口是否加载失败（用于区分「未配置模板」与「加载失败」，给出不同引导） */
+const templateLoadFailed = ref(false);
 const mappings = ref<TemplateMappingVO[]>([]);
 const file = ref<File | null>(null);
 
@@ -144,7 +154,10 @@ const submit = async (): Promise<string> => {
     throw new Error('请选择 BU');
   }
   if (!form.templateCode) {
-    throw new Error('请选择导入模板');
+    // 区分「没选」与「根本没模板」：后者是配置问题（设计 §15 需 Admin 发布模板），不能只提示「请选择」
+    throw new Error(templates.value.length
+      ? '请选择导入模板'
+      : '暂无可用导入模板：请先到「平台管理 › 导入Template」新建模板、配置字段映射后发布，再提交');
   }
   if (!file.value) {
     throw new Error('请选择要上传的文件');
@@ -164,7 +177,14 @@ const submit = async (): Promise<string> => {
 };
 
 onMounted(async () => {
-  templates.value = await listImportTemplates();
+  // try/catch：模板接口异常时不能让弹窗挂载中断（此前无捕获，下拉会静默为空且无任何引导）
+  try {
+    templates.value = await listImportTemplates();
+    templateLoadFailed.value = false;
+  } catch {
+    templates.value = [];
+    templateLoadFailed.value = true;
+  }
   // 默认选中第一个已发布模板，没有则取第一个；业务上下文随之回落模板定义
   const published = templates.value.find(item => item.status === 'Published') ?? templates.value[0];
   if (published) {
@@ -206,6 +226,15 @@ defineExpose({ submit });
   margin: 0 0 8px 130px;
   font-size: 12px;
   color: var(--g-text2);
+}
+
+/* 模板下拉空态引导（未配置模板 / 加载失败两种文案） */
+.tpl-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--g-text2);
+  white-space: normal;
 }
 
 /* 模板表头要求（必填列标 *） */

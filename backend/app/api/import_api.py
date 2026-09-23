@@ -190,6 +190,45 @@ async def mapping_delete(mapping_id: int):
     return R.ok(message, msg=message)
 
 
+@router.post("/template")
+async def template_save(body: dict = Body(...)):
+    """新建 / 编辑导入模板（业务上下文：场景 / BU / 客户类型 / 产品线 / 来源系统）。
+
+    全新部署（无模板数据）时管理员可直接在「平台管理 › 导入Template」建模板，
+    不再依赖开发预置 SQL；模板编码留空时按业务上下文自动生成。
+    """
+    message, err = await _run_tx(import_service.save_template, body)
+    if err:
+        return R.fail(err)
+    return R.ok(message, msg=message)
+
+
+@router.post("/template/core-mapping")
+async def template_fill_core_mapping(body: dict = Body(...)):
+    """一键补齐主键字段映射（客户法定名称 / 统一社会信用代码）——发布的前置条件。
+
+    新建模板已自动带上；此接口用于历史模板或列被删过的模板，避免手输字段编码。
+    """
+    message, err = await _run_tx(
+        import_service.fill_core_mappings,
+        template_code=(body.get("templateCode") or body.get("template_code") or ""))
+    if err:
+        return R.fail(err)
+    return R.ok(message, msg=message)
+
+
+@router.post("/template/status")
+async def template_status(body: dict = Body(...)):
+    """发布 / 停用导入模板（发布前后端校验主键字段映射 legal_name / credit_code）。"""
+    message, err = await _run_tx(
+        import_service.set_template_status,
+        template_code=(body.get("templateCode") or body.get("template_code") or ""),
+        status=(body.get("status") or ""))
+    if err:
+        return R.fail(err)
+    return R.ok(message, msg=message)
+
+
 @router.post("/job/upload")
 async def job_upload(file: UploadFile = File(...),
                      templateCode: str = Form(...),
@@ -212,3 +251,15 @@ async def job_upload(file: UploadFile = File(...),
     # 分流结果走 GET /job/{id}/result。
     job_code = result[0] if isinstance(result, tuple) else result
     return R.ok(job_code, msg="导入任务已创建")
+
+
+# ============================ 兼容别名 ============================
+# 早期联调脚本 / 旧前端构建会用 /cmd/template/list 读模板清单（真实路径为
+# /cmd/import/template/list）。保留一个只读别名，避免联调时把它误判成 404。
+compat_router = APIRouter(prefix="/cmd", tags=["导入"], include_in_schema=False)
+
+
+@compat_router.get("/template/list")
+async def template_list_compat():
+    """兼容别名：等价于 GET /cmd/import/template/list。"""
+    return await template_list()

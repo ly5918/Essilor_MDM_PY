@@ -12,7 +12,7 @@ import * as cmdPocApi from '@/api/demo/cmdPoc';
 import type { CustomerVO, HierarchyNodeVO, MetadataFieldVO, OcrResultVO, PageId, RoleKey } from '@/api/demo/cmdPoc/types';
 import { DIALOG_MAP, type DialogKey } from '../constants/dialogs';
 import { PAGE_META } from '../constants/pages';
-import { getRole, type PocRole } from '../constants/roles';
+import { getRole, type PocMenu, type PocRole } from '../constants/roles';
 
 /** 客户在层级体系中的位置（客户列表「层级」列 / 客户详情展示） */
 export interface HierarchyIndexItem {
@@ -48,6 +48,8 @@ export interface CmdPocContext {
   pageTitle: ComputedRef<string>;
   /** 当前页面菜单项 */
   currentMenu: ComputedRef<PocRole['menus'][number] | undefined>;
+  /** 当前页面所属的二级菜单容器（如 客户管理 ›  处理中申请 的父项）；一级页面为 undefined */
+  currentParentMenu: ComputedRef<PocMenu | undefined>;
   /** 弹窗状态 */
   dialog: DialogState;
   /** 打开弹窗 */
@@ -134,6 +136,15 @@ export function createCmdPoc(defaultRole: RoleKey): CmdPocContext {
    * 3) 最后才是「工作台」兜底。
    */
   const pageTitle = computed(() => currentMenu.value?.label ?? PAGE_META[currentPage.value]?.title ?? '工作台');
+
+  /**
+   * 当前页面所属的二级菜单容器（面包屑上级）。
+   * 例：「客户管理」拆成 已生效主档 / 处理中申请 两个子页后，
+   * 面包屑要能显示「CMD POC / 客户管理 / …」，否则两个子页看起来像两个不相干的一级页面。
+   */
+  const currentParentMenu = computed<PocMenu | undefined>(() =>
+    role.value.menus.find(menu => menu.children?.some(child => child.id === currentPage.value))
+  );
 
   const dialog = reactive<DialogState>({ current: '', payload: {} });
   const openDialog = (key: DialogKey, payload?: Record<string, unknown>) => {
@@ -263,6 +274,7 @@ export function createCmdPoc(defaultRole: RoleKey): CmdPocContext {
     currentSub,
     pageTitle,
     currentMenu,
+    currentParentMenu,
     dialog,
     openDialog,
     closeDialog,

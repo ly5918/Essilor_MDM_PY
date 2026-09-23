@@ -46,7 +46,14 @@
         </el-table-column>
         <el-table-column label="类型（当前节点）" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-tag size="small" effect="plain" type="warning">Wait for user</el-tag>
+            <!--
+              退回单单独给徽标：列表原先恒显示「Wait for user」，
+              一条被 GC 打回的实例和普通在办单长得一模一样，扫列表根本看不出。
+            -->
+            <el-tag v-if="row.status === 'RETURNED'" size="small" effect="plain" :type="statusTagType(row.status)">
+              {{ statusLabel(row.status) }}
+            </el-tag>
+            <el-tag v-else size="small" effect="plain" type="warning">Wait for user</el-tag>
             <span class="wv-sub">{{ row.currentNodeName ?? '—' }}</span>
           </template>
         </el-table-column>

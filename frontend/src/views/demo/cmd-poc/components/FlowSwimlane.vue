@@ -31,6 +31,10 @@
             <marker id="fg-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
               <path d="M0,0 L7,3 L0,6 Z" :fill="arrowColor" />
             </marker>
+            <!-- 退回连线专用箭头（琥珀色，与主流程箭头区分） -->
+            <marker id="fg-arrow-return" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+              <path d="M0,0 L7,3 L0,6 Z" :fill="returnColor" />
+            </marker>
           </defs>
 
           <!-- 泳道背景带 + 泳道标签 -->
@@ -69,17 +73,25 @@
             <text :x="p.x" y="23" class="fg-phase-label" text-anchor="middle">{{ p.index }}. {{ p.name }}</text>
           </g>
 
-          <!-- 连线 -->
+          <!-- 连线（含退回回溯箭头：主流程只表达「往前走」，退回是逆方向的一跳） -->
           <g>
             <template v-for="(e, i) in graph.edges" :key="`${e.from}-${e.to}-${i}`">
               <path
                 v-if="edgePath(e)"
                 :d="edgePath(e)!"
                 fill="none"
-                :stroke="e.passed ? doneColor : pendingColor"
-                stroke-width="1.5"
-                marker-end="url(#fg-arrow)"
+                :stroke="isReturnEdge(e) ? returnColor : e.passed ? doneColor : pendingColor"
+                :stroke-width="isReturnEdge(e) ? 2 : 1.5"
+                :stroke-dasharray="isReturnEdge(e) ? '6 4' : undefined"
+                :marker-end="isReturnEdge(e) ? 'url(#fg-arrow-return)' : 'url(#fg-arrow)'"
               />
+              <text
+                v-if="e.label && edgeLabelPos(e)"
+                class="fg-edge-label"
+                :x="edgeLabelPos(e)!.x"
+                :y="edgeLabelPos(e)!.y"
+                text-anchor="middle"
+              >{{ e.label }}</text>
             </template>
           </g>
 
@@ -212,7 +224,8 @@
       <b>BU Scope 初审 / GC Scope 决策</b> 建模为用户任务，其余自动节点由业务侧 Service 执行，
       结果以流程变量驱动路由。
       <template v-if="isInstance">
-        当前为<b>实例视图</b>（{{ taskNo }}）：绿色 = 已完成，蓝色 = 当前节点，灰色 = 待执行，红色 = 已终止。
+        当前为<b>实例视图</b>（{{ taskNo }}）：绿色 = 已完成，蓝色 = 当前节点，琥珀色 = 已退回（需重做），
+        灰色 = 待执行，红色 = 已终止；琥珀虚线箭头 = 退回回溯（由退回节点指回当前停留节点）。
       </template>
       <template v-else>
         当前为<b>定义视图</b>（蓝图，节点全部待执行）。在「流程实例记录」中点某条记录的「泳道图」，
@@ -275,6 +288,7 @@ const viewBox = `0 0 ${CANVAS_W} ${CANVAS_H}`;
 
 const doneColor = 'var(--el-color-success)';
 const currentColor = 'var(--el-color-primary)';
+const returnColor = 'var(--el-color-warning)';
 const pendingColor = 'var(--el-border-color)';
 const arrowColor = 'var(--el-text-color-secondary)';
 
@@ -306,6 +320,7 @@ const phaseCols = computed(() => {
 const fillOf = (n: FlowGraphNodeVO) => {
   if (n.status === 'COMPLETED') return 'var(--el-color-success-light-9)';
   if (n.status === 'CURRENT') return 'var(--el-color-primary-light-9)';
+  if (n.status === 'RETURNED') return 'var(--el-color-warning-light-9)';
   if (n.status === 'TERMINATED') return 'var(--el-color-danger-light-9)';
   return 'var(--el-fill-color-lighter)';
 };
@@ -313,6 +328,7 @@ const fillOf = (n: FlowGraphNodeVO) => {
 const strokeOf = (n: FlowGraphNodeVO) => {
   if (n.status === 'COMPLETED') return doneColor;
   if (n.status === 'CURRENT') return currentColor;
+  if (n.status === 'RETURNED') return returnColor;
   if (n.status === 'TERMINATED') return 'var(--el-color-danger)';
   return pendingColor;
 };
@@ -320,12 +336,14 @@ const strokeOf = (n: FlowGraphNodeVO) => {
 const NODE_STATUS_TEXT: Record<string, string> = {
   COMPLETED: '已完成',
   CURRENT: '进行中',
+  RETURNED: '已退回',
   TERMINATED: '已终止',
   PENDING: '待执行'
 };
-const NODE_STATUS_TAG: Record<string, 'success' | 'primary' | 'danger' | 'info'> = {
+const NODE_STATUS_TAG: Record<string, 'success' | 'primary' | 'warning' | 'danger' | 'info'> = {
   COMPLETED: 'success',
   CURRENT: 'primary',
+  RETURNED: 'warning',
   TERMINATED: 'danger',
   PENDING: 'info'
 };
@@ -356,6 +374,25 @@ const edgePath = (e: FlowGraphEdgeVO) => {
     return `M${x1},${from.y} L${x1},${detourY} L${x2 - 20},${detourY} L${x2 - 20},${to.y} L${x2},${to.y}`;
   }
   return `M${x1},${from.y} L${midX},${from.y} L${midX},${to.y} L${x2},${to.y}`;
+};
+
+/** 退回连线（后端在退回态下追加的 RETURN 连线）：琥珀虚线 + 独立箭头 */
+const isReturnEdge = (e: FlowGraphEdgeVO) => e.skipType === 'RETURN';
+
+/** 连线文字锚点：贴着退回连线的拐点放，不与节点盒重叠 */
+const edgeLabelPos = (e: FlowGraphEdgeVO) => {
+  const nodes = props.graph?.nodes ?? [];
+  const from = nodes.find(n => n.nodeCode === e.from);
+  const to = nodes.find(n => n.nodeCode === e.to);
+  if (!from || !to) return null;
+  const x1 = from.x + NODE_W / 2;
+  const x2 = to.x - NODE_W / 2;
+  const midX = x1 + 26;
+  if (x2 <= midX) {
+    // 回退类连线（含退回）：落在下方绕行段的中间
+    return { x: (x1 + x2 - 20) / 2, y: Math.max(from.y, to.y) + 34 - 7 };
+  }
+  return { x: midX, y: (from.y + to.y) / 2 - 6 };
 };
 
 const shapeText = (shape: string) => (shape === 'CIRCLE' ? '开始/结束' : shape === 'DIAMOND' ? '网关' : '任务');
@@ -477,6 +514,13 @@ const wrapLabel = (name: string): string[] => {
 .fg-node-label {
   font-size: 10px;
   fill: var(--el-text-color-primary);
+}
+
+/* 连线文字（退回箭头标注「退回」） */
+.fg-edge-label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--el-color-warning);
 }
 
 /* 节点详情 */

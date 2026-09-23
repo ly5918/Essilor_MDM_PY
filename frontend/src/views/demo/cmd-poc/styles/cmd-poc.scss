@@ -1031,12 +1031,22 @@
     min-width: 0;
     max-width: 100%;
   }
-  /* 列表全宽 + 点击行弹出审批详情弹窗（原 .ap-layout 双栏已移除） */
+  /* 左列表 + 右侧只读速览：点击任务行加载右侧概要，「进入审批」打开宽弹窗完成审批操作 */
   .ap-list-title {
     font-size: 13px;
     font-weight: 700;
     color: var(--g-text);
     margin-bottom: 4px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  /* 列表操作提示：消除「点了行没反应」的困惑（测试报告 BUG-PY-02） */
+  .ap-list-tip {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--g-text2);
   }
   /* 「客户/主题」单元格：名称 + 「同主体在途N」标签同一行。
      必须 min-width:0 —— flex 子项默认 min-width:auto，长名称会把标签挤出单元格。 */
@@ -1080,6 +1090,59 @@
     font-size: 12px;
     color: var(--g-text2);
     line-height: 1.5;
+  }
+  /* 已办结任务的说明：与「进入审批」的引导话术区分，这里是「没有动作可做」的中性陈述 */
+  .ap-quick-hint.is-closed {
+    color: var(--el-color-info);
+  }
+  /*
+   * 审批弹窗底部动作区：主操作常驻可见。
+   * 原来「审批意见 + 动作按钮」跟在治理证据之后，证据区一长就要滚到弹窗底部才看得到按钮，
+   * 第一眼观感就是「点进去没有审批按钮」——审批的主操作不该藏在滚动内容里。
+   */
+  .ap-dlg-foot {
+    /*
+     * EP 的 .el-dialog__footer 自带 display:flex + justify-content:flex-end（行方向），
+     * 放在里面的本容器会被当成「收缩到内容宽」的 flex 子项（实测仅 341px），
+     * 结果输入框与按钮一起被挤在右侧一条里。必须显式吃满 footer 宽度。
+     */
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-align: left;
+
+    /* 审批意见输入框：整宽铺开（列方向默认 stretch，这里显式写清避免被外层 text-align 影响） */
+    .ap-foot-comment {
+      width: 100%;
+
+      .el-textarea__inner {
+        text-align: left;
+      }
+    }
+
+    .ap-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    /* 已办结：动作区整行换成状态 / 时间 / 意见说明，明确「为什么没有按钮」 */
+    .ap-foot-closed {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+
+      .ap-foot-closed-text {
+        font-size: 12px;
+        color: var(--g-text2);
+      }
+    }
   }
   /* 审批弹窗内申请信息三组一行铺开（提交人 / 当前节点 / SLA） */
   .ap-dlg .ap-detail-body .h-kv {
@@ -1230,6 +1293,12 @@
 
     .ap-cand-hint {
       color: var(--g-text2);
+
+      /* 命中候选是在途申请（尚未成为主档）：处置与「关联已有主档」完全不同，用告警色区分 */
+      &.is-warn {
+        color: var(--el-color-warning);
+        font-weight: 600;
+      }
     }
 
     .ap-cmp-head,
