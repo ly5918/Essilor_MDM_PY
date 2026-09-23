@@ -1774,6 +1774,8 @@ export interface ImportStatsVO {
   reviewCount: number;
   /** Invalid 退回修复 */
   invalidCount: number;
+  /** New 行中仍处于「待审批任务」（WAIT_REVIEW）的数量——审批办结后归 0，KPI 卡真口径 */
+  newPendingCount?: number;
 }
 
 export interface ApprovalTaskVO {

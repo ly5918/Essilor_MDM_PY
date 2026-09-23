@@ -217,7 +217,9 @@ const kpis = computed(() => [
   { label: '总行数', value: stats.value.totalRows, color: '#547f9f' },
   { label: 'Exact 关联', value: stats.value.exactCount, color: '#2e8b57' },
   { label: 'Suspected 待治理', value: stats.value.suspectedCount, color: '#b8791a' },
-  { label: 'New 待审批', value: stats.value.newCount, color: '#2f73ad' },
+  // 真口径：只统计仍处「待审批任务」（WAIT_REVIEW）的 New 行——审批办结后归 0，
+  // 否则批完还显示「New 待审批 2」会被读成「批了没生效」
+  { label: 'New 待审批', value: stats.value.newPendingCount ?? stats.value.newCount, color: '#2f73ad' },
   { label: 'Invalid 退回修复', value: stats.value.invalidCount, color: '#b4392f' }
 ]);
 

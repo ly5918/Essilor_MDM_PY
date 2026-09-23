@@ -60,6 +60,8 @@ async def import_stats():
         "newCount": int(stats.get("new_count") or 0),
         "reviewCount": int(stats.get("review_count") or 0),
         "invalidCount": int(stats.get("invalid_count") or 0),
+        # New 行中仍处于「待审批任务」的数量（KPI 卡「New 待审批」真口径）
+        "newPendingCount": int(stats.get("new_pending_count") or 0),
     })
 
 

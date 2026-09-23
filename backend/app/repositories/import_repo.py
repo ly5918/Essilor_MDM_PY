@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 
 from ..core.db import table
 from ..core.query import dynamic_insert
@@ -62,7 +62,12 @@ async def list_jobs(conn, page: int, size: int,
 
 
 async def aggregate_job_stats(conn) -> dict:
-    """导入中心全局统计（全量口径：跨全部任务 SUM，对应 Java selectStats）。"""
+    """导入中心全局统计（全量口径：跨全部任务 SUM，对应 Java selectStats）。
+
+    new_pending_count 额外按「任务仍待审批（WAIT_REVIEW）」过滤：
+    New 行落库即 row_status=SUCCESS，「待审批」语义挂在任务状态上——
+    KPI 卡「New 待审批」若取全量累计，审批办结后仍显示旧值，会被读成「批了没生效」。
+    """
     t = table("cmd_import_job")
     row = (await conn.execute(
         select(
@@ -73,6 +78,10 @@ async def aggregate_job_stats(conn) -> dict:
             func.coalesce(func.sum(t.c.new_count), 0).label("new_count"),
             func.coalesce(func.sum(t.c.review_count), 0).label("review_count"),
             func.coalesce(func.sum(t.c.invalid_count), 0).label("invalid_count"),
+            func.coalesce(func.sum(case(
+                (t.c.job_status == "WAIT_REVIEW", t.c.new_count),
+                else_=0,
+            )), 0).label("new_pending_count"),
         ))).mappings().first()
     return dict(row)
 

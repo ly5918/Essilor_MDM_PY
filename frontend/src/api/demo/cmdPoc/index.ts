@@ -924,7 +924,8 @@ export const getImportStats = async (): Promise<ImportStatsVO> => {
     suspectedCount: vo.suspectedCount ?? 0,
     newCount: vo.newCount ?? 0,
     reviewCount: vo.reviewCount ?? 0,
-    invalidCount: vo.invalidCount ?? 0
+    invalidCount: vo.invalidCount ?? 0,
+    newPendingCount: vo.newPendingCount ?? 0
   };
 };
 
@@ -1072,7 +1073,9 @@ export const uploadImportJob = async (data: ImportUploadForm): Promise<string> =
       headers: { 'Content-Type': 'multipart/form-data' }
     })
   );
-  return `导入任务已创建：${jobCode}`;
+  // 返回裸任务编号：调用方（BatchUploadDialog）自行组织文案，
+  // 避免「任务 导入任务已创建：IMP-x 已创建」这类双重拼接
+  return jobCode;
 };
 
 export const listTemplateMappings = async (templateCode?: string): Promise<TemplateMappingVO[]> => {
