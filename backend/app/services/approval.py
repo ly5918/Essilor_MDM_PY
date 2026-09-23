@@ -543,6 +543,33 @@ async def do_action(task_no: str, action: str, actor: str,
                 table("cmd_hierarchy_relation").update()
                 .where(table("cmd_hierarchy_relation").c.id == int(task["biz_id"]))
                 .values(status=new_status, approved_time=datetime.now()))
+            if new_status == "Effective":
+                # 🚨 关系生效必须同步节点树：此前只写 relation 不写 node，relation 与
+                #    node 脱节——客户已生效却永远「待归位」，层级树也看不到挂载结果
+                from ..api.hierarchy import mount_node_for_relation
+                rel_t = table("cmd_hierarchy_relation")
+                rel = (await conn.execute(
+                    select(rel_t).where(rel_t.c.id == int(task["biz_id"])))).mappings().first()
+                if rel and rel["child_one_id"] and rel["parent_one_id"]:
+                    ok = await mount_node_for_relation(
+                        conn, rel["child_one_id"], rel["parent_one_id"])
+                    if ok:
+                        # 历史留痕（与 /assign 的 CREATE 口径一致）
+                        from ..core.query import dynamic_insert
+                        now = datetime.now()
+                        await dynamic_insert(conn, table("cmd_hierarchy_relation_hist"), {
+                            "relation_id": rel["id"], "relation_code": rel["relation_code"],
+                            "version_no": 1, "operation": "CREATE",
+                            "hierarchy_type": rel["hierarchy_type"],
+                            "relation_type": rel["relation_type"],
+                            "parent_one_id": rel["parent_one_id"],
+                            "child_one_id": rel["child_one_id"],
+                            "effective_from": now, "status": "Effective",
+                            "change_reason": rel.get("change_reason"),
+                            "snapshot_json": json.dumps(
+                                {"parent": rel["parent_one_id"], "child": rel["child_one_id"]},
+                                ensure_ascii=False),
+                            "remark": "审批通过，关系生效", "create_by": 0, "create_time": now})
 
     result["task_status"] = status
     return result

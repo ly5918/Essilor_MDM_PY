@@ -16,11 +16,12 @@
       </el-form-item>
 
       <el-form-item label="父节点 One ID" prop="parentOneId">
+        <!-- 🚨 request/manage 从页头进入时无 nodeKey，父节点必须可自选（只读空 input 是死局） -->
         <el-select
-          v-if="mode === 'edit'"
+          v-if="mode !== 'child'"
           v-model="form.parentOneId"
           filterable
-          placeholder="选择新的父节点"
+          placeholder="选择父节点（A3 / A2）"
           style="width: 100%"
         >
           <el-option
@@ -332,12 +333,13 @@ const flatten = (nodes: HierarchyNodeVO[], out: HierarchyNodeVO[] = []): Hierarc
 
 onMounted(async () => {
   const oneId = nodeKey.value;
-  if (!oneId) return;
-  const node = await getHierarchyNode(oneId);
-  currentNode.value = node ?? null;
+  if (oneId) {
+    const node = await getHierarchyNode(oneId);
+    currentNode.value = node ?? null;
+  }
 
   if (mode.value === 'edit') {
-    form.childOneId = node?.oneId ?? oneId;
+    form.childOneId = currentNode.value?.oneId ?? oneId;
     const relation = await getNodeActiveRelation(form.childOneId);
     activeRelation.value = relation ?? null;
     if (relation) {
@@ -356,7 +358,13 @@ onMounted(async () => {
     });
     parentCandidates.value = all.filter(item => !excluded.has(item.oneId) && item.oneId);
   } else {
-    form.parentOneId = node?.oneId ?? oneId;
+    // request / manage / child：预填当前选中节点（页头进入时为空 → 用户下拉自选）
+    form.parentOneId = currentNode.value?.oneId ?? oneId ?? '';
+    // 候选父节点：只有 A3 / A2 能做父级（request/manage 自选时需要；child 只读预填不受影响）
+    const tree = await getHierarchy();
+    parentCandidates.value = flatten(tree).filter(
+      item => item.oneId && (item.level === 'A3' || item.level === 'A2')
+    );
     unassigned.value = await getUnassignedNodes();
   }
   await runCheck();

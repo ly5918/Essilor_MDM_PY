@@ -134,9 +134,11 @@ async def flow_graph(scene_code: str, taskNo: Optional[str] = Query(None)):
                 touched = set(act_by_node.keys())
                 returned = sl.is_returned(task["status"], task["current_node_name"], actions)
                 return_src = sl.return_source_node(actions)
+                cur_code = sl.SCENE_STEP_ALIAS.get(scene_code, {}).get(
+                    task["current_node_code"], task["current_node_code"])
                 current_code = sl.apply_step_status(
                     steps, task["status"], task["current_node_name"], touched,
-                    current_node_code=task["current_node_code"], returned=returned)
+                    current_node_code=cur_code, returned=returned)
         finally:
             await conn.close()
 
@@ -306,7 +308,8 @@ async def flow_trace(task_no: str):
                 s["assignee"] = "GC_STEWARD" if s["nodeCode"] == sl.NODE_GC_REVIEW else "BU_STEWARD"
         sl.apply_step_status(steps, task.get("status"), task.get("current_node_name"),
                              set(act_by_node.keys()),
-                             current_node_code=task.get("current_node_code"),
+                             current_node_code=sl.SCENE_STEP_ALIAS.get(scene_code, {}).get(
+                                 task.get("current_node_code"), task.get("current_node_code")),
                              returned=sl.is_returned(task.get("status"),
                                                      task.get("current_node_name"), actions))
         done, total_steps, pct = _progress(steps)

@@ -247,6 +247,19 @@ def _collect_node_codes() -> None:
 _collect_node_codes()
 
 
+# 非标场景：业务步骤条编码与标准审批链路编码（APPLY/BU_REVIEW/GC_REVIEW）不一致，
+# trace 点亮前需把任务当前节点编码映射到该场景步骤条上的对应节点。
+# 集成失败处理 12 步：提交→创建集成运行任务(RUN)；BU Scope 影响确认→治理影响可见(STEWARD_VIEW)；
+# GC Scope 复核→管理员查看任务详情(ADMIN_VIEW)。
+SCENE_STEP_ALIAS: dict[str, dict[str, str]] = {
+    "INTEGRATION_FAIL": {
+        "APPLY": "RUN",
+        "BU_REVIEW": "STEWARD_VIEW",
+        "GC_REVIEW": "ADMIN_VIEW",
+    },
+}
+
+
 def resolve_current_node(task_status: Optional[str], current_node_name: Optional[str],
                          current_node_code: Optional[str] = None) -> str:
     """任务状态 + 当前节点名/编码 → 泳道模板节点编码（Java resolveCurrentNode）。

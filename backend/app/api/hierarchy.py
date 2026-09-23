@@ -139,7 +139,21 @@ async def add_relation(body: dict = Body(...)):
     # 总设计泳道：层级关系变更走 HIER_RELATION 审批流（提交→BU 审核→生效）
     body.setdefault("status", "PendingApproval")
     async with get_engine().begin() as conn:
-        vals = await dynamic_insert(conn, table("cmd_hierarchy_relation"), body)
+        # 🚨 防重预检：同一子客户已有生效/在途关系时明确拒绝（此前撞唯一键直接 500，
+        #    错误被前端弹窗吞掉——用户看不到提示、审批任务也不生成）
+        rel_t = table("cmd_hierarchy_relation")
+        dup = (await conn.execute(
+            select(rel_t).where(
+                rel_t.c.child_one_id == (body.get("child_one_id") or ""),
+                rel_t.c.del_flag == "0",
+                rel_t.c.status.in_(("PendingApproval", "Effective"))))).mappings().first()
+        if dup:
+            return R.fail(
+                f"子客户 {body.get('child_one_id')} 已存在"
+                f"{'生效' if dup['status'] == 'Effective' else '审批中'}的层级关系"
+                f"（{dup['relation_code']}：{dup['child_one_id']} → {dup['parent_one_id']}），请勿重复提交",
+                code=409)
+        vals = await dynamic_insert(conn, rel_t, body)
         from ..services.sequence import gen_code, next_id
         from ..workflow.engine import start_instance
         task_no = await gen_code(conn, "AP-", 4, "APPROVAL")
@@ -229,6 +243,55 @@ async def _customer_by_one_id(conn, one_id: str):
     row = (await conn.execute(
         select(t).where(t.c.one_id == one_id, t.c.del_flag == "0"))).mappings().first()
     return dict(row) if row else None
+
+
+async def mount_node_for_relation(conn, child_one_id: str, parent_one_id: str, now=None) -> bool:
+    """层级关系审批生效后，把子客户同步挂到层级树（与 /assign 的节点登记同口径）。
+
+    🚨 此前审批回调只把 relation 置 Effective、不写 node —— relation 与 node 脱节，
+    客户在层级树和「待归位」列表里永远看不到挂载结果（已生效却仍待归位）。
+    父节点不在树上（数据异常）时返回 False 且不动树。
+    """
+    now = now or datetime.now()
+    parent = await _node_by_one_id(conn, parent_one_id)
+    if not parent:
+        return False
+    child_level = _LEVEL_BY_DEPTH.get(parent["depth"] + 1, "A1")
+    child_depth = parent["depth"] + 1
+    child = await _node_by_one_id(conn, child_one_id)
+    cust = await _customer_by_one_id(conn, child_one_id)
+    child_name = (child or {}).get("legal_name") or (cust or {}).get("legal_name") or child_one_id
+    full_path = f"{parent['full_path'] or ''}{child_one_id}/"
+    path_names = f"{parent['path_names']}/{child_name}" if parent.get("path_names") else child_name
+    node_t = table("cmd_hierarchy_node")
+    if child:
+        await conn.execute(node_t.update().where(node_t.c.id == child["id"]).values(
+            parent_one_id=parent_one_id, level=child_level, depth=child_depth,
+            node_code=f"{child_level}-{child_one_id}", full_path=full_path,
+            path_names=path_names, hierarchy_type=_hier_type_by_level(child_level),
+            status="active", update_time=now))
+    else:
+        await dynamic_insert(conn, node_t, {
+            "node_code": f"{child_level}-{child_one_id}", "one_id": child_one_id,
+            "legal_name": child_name,
+            "hierarchy_type": _hier_type_by_level(child_level),
+            "level": child_level, "parent_one_id": parent_one_id,
+            "full_path": full_path, "path_names": path_names,
+            "depth": child_depth, "bu_scope": (cust or {}).get("bu_scope"),
+            "children_count": 0, "descendants": 0,
+            "status": "active", "sort_order": 0, "effective_from": now,
+            "create_by": 0, "create_time": now, "update_time": now})
+    fresh = await _node_by_one_id(conn, child_one_id)
+    if fresh:
+        await _rebuild_subtree(conn, fresh, child_depth, full_path, path_names)
+    # 祖先计数 +1（新链）
+    chain = await _chain_up(conn, parent_one_id)
+    for anc in chain:
+        await conn.execute(node_t.update().where(node_t.c.id == anc["id"]).values(
+            children_count=anc["children_count"]
+            + (1 if anc["one_id"] == parent_one_id else 0),
+            descendants=anc["descendants"] + 1, update_time=now))
+    return True
 
 
 async def _chain_up(conn, one_id: str, max_depth: int = 8):

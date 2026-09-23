@@ -8,9 +8,9 @@
     </div>
 
     <div class="right-menu flex align-center">
-      <!-- 操作手册（帮助文档）：文件在 public/help/ 下维护，更新时替换文件即可 -->
-      <el-tooltip content="操作手册" effect="dark" placement="bottom">
-        <div class="right-menu-item hover-effect" @click="openManual">
+      <!-- 用户手册（帮助文档）：点击图标直接打开；文件在 public/help/ 下维护，更新时替换文件即可 -->
+      <el-tooltip content="用户手册" effect="dark" placement="bottom">
+        <div class="right-menu-item hover-effect" @click="openUserManual">
           <el-icon><document /></el-icon>
         </div>
       </el-tooltip>
@@ -45,7 +45,6 @@
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="userManual">用户手册</el-dropdown-item>
-            <el-dropdown-item command="manual">操作手册</el-dropdown-item>
             <el-dropdown-item command="setLayout">布局设置</el-dropdown-item>
             <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
           </el-dropdown-menu>
@@ -68,6 +67,7 @@ import Screenfull from '@/components/Screenfull/index.vue';
 import SizeSelect from '@/components/SizeSelect/index.vue';
 import tab from '@/plugins/tab';
 import { useUserStore } from '@/store/modules/user';
+import { removeToken } from '@/utils/auth';
 import { useCmdPoc } from '../composables/useCmdPoc';
 import { ROLE_DROPDOWN_LABELS, ROLE_LIST } from '../constants/roles';
 
@@ -90,13 +90,7 @@ const onRoleChange = () => {
 /** 打开布局设置抽屉 */
 const openSetting = () => settingRef.value?.openSetting();
 
-/** 打开操作手册（新页签；文件位于 public/help/，更新时替换该文件即可） */
-const openManual = () => {
-  const url = `${import.meta.env.BASE_URL}help/cmd-poc-manual.html`;
-  window.open(url, '_blank');
-};
-
-/** 打开用户手册（新版，实时截图与文案独立维护） */
+/** 打开用户手册（新版，实时截图与文案独立维护；顶部帮助图标与头像下拉共用） */
 const openUserManual = () => {
   const url = `${import.meta.env.BASE_URL}help/cmd-poc-user-manual.html`;
   window.open(url, '_blank');
@@ -109,7 +103,12 @@ const logout = async () => {
     cancelButtonText: '取消',
     type: 'warning'
   });
-  await userStore.logout();
+  // POC 模拟登录没有真实后端会话，本地清状态即可；
+  // 不能走 userStore.logout()（会调 POST /auth/logout，Python 后端无此接口 → 404 弹「系统未知错误」）
+  userStore.token = '';
+  userStore.roles = [];
+  userStore.permissions = [];
+  removeToken();
   tab.closeAllPage();
   // 退出后回到 CMD POC 登录页
   router.replace('/cmd-poc-py/login');
@@ -117,7 +116,6 @@ const logout = async () => {
 
 const commandMap: Record<string, () => void> = {
   setLayout: openSetting,
-  manual: openManual,
   userManual: openUserManual,
   logout
 };
