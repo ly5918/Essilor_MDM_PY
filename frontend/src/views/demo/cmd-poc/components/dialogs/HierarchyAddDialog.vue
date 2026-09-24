@@ -39,9 +39,13 @@
       </el-form-item>
 
       <el-form-item label="子节点 One ID" prop="childOneId">
-        <!-- 增加子节点：只能选「已批准但尚未归位」的主数据，保证归位链路闭环 -->
+        <!--
+          子节点一律用「待归位主数据」下拉选择（request / manage / child 同一数据源），
+          不给自由输入：One ID 是系统生成的编码，手输必然拼错且选不到未归位主数据；
+          只有 edit（改挂）模式子节点固定不可改，保持只读。
+        -->
         <el-select
-          v-if="mode === 'child' || mode === 'request'"
+          v-if="mode !== 'edit'"
           v-model="form.childOneId"
           filterable
           clearable
@@ -58,25 +62,22 @@
         <el-input v-else :model-value="form.childOneId" readonly />
       </el-form-item>
 
+      <!-- 关系类型由后端按父子级别实时推导（见下方校验区「推导关系」），不让用户手选一个会被系统覆盖的值 -->
       <el-form-item label="关系类型">
-        <el-select v-model="form.relationType" style="width: 100%">
-          <el-option
-            v-for="item in HIER_RELATION_OPTIONS"
-            :key="item"
-            :label="item"
-            :value="RELATION_CODE[item]"
-          />
-        </el-select>
+        <el-input :model-value="relationLabel" placeholder="选择父 / 子节点后自动推导" readonly />
       </el-form-item>
 
+      <!-- 层级类型按子节点级别自动推导（总设计：A3→商业主体 / A2→法人 / A1→门店），挂载审批时系统同样按级别落库 -->
       <el-form-item label="层级类型">
-        <el-select v-model="form.hierarchyType" style="width: 100%">
-          <el-option v-for="item in HIER_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
+        <el-input
+          :model-value="derivedHierarchyType?.label ?? ''"
+          placeholder="选择子节点后按级别自动推导"
+          readonly
+        />
       </el-form-item>
 
       <el-form-item label="Payer One ID">
-        <el-input v-model="form.payerOneId" placeholder="如 GC-PY-0091" />
+        <el-input v-model="form.payerOneId" placeholder="选填 · 付款方 One ID（如 GC-PY-0091），A1 门店挂 Payer 时填写" />
       </el-form-item>
 
       <el-form-item label="生效日期" prop="effectiveFrom">
@@ -203,7 +204,6 @@ import type {
   HierarchyUnassignedVO,
   HierarchyValidateVO
 } from '@/api/demo/cmdPoc/types';
-import { HIER_RELATION_OPTIONS, HIER_TYPE_OPTIONS } from '../../constants/options';
 import { useCmdPoc } from '../../composables/useCmdPoc';
 
 defineOptions({ name: 'CmdPocHierarchyAddDialog' });
@@ -279,6 +279,28 @@ const rules: FormRules = {
 const modeTitle = computed(() =>
   mode.value === 'request' ? '发起层级关系申请' : mode.value === 'edit' ? '编辑层级关系' : mode.value === 'child' ? '增加子节点' : '新增层级关系'
 );
+
+/** 关系类型展示文案：form.relationType 存后端推导的枚举码（A3_A2 / A2_A1），反查成中文 */
+const relationLabel = computed(() => {
+  if (!form.relationType) return '';
+  const hit = Object.entries(RELATION_CODE).find(([, code]) => code === form.relationType);
+  return hit?.[0] ?? form.relationType;
+});
+
+/** 子节点级别 → 层级类型（与后端 _hier_type_by_level 同口径：A3→COMMERCIAL / A2→LEGAL / A1→DOOR） */
+const LEVEL_HIER_TYPE: Record<string, { code: string; label: string }> = {
+  A3: { code: 'COMMERCIAL', label: 'Commercial · 商业主体（A3）' },
+  A2: { code: 'LEGAL', label: 'Legal · 法人（A2）' },
+  A1: { code: 'DOOR', label: 'Door · 门店（A1）' }
+};
+
+/** 子节点级别：优先取后端校验返回的「挂载后级别」（级别由挂载位置推导，父 depth+1），
+ *  未校验时回落待归位主数据的建议级别 / 当前节点级别——与提交后系统落库口径一致 */
+const childLevel = computed(() => {
+  if (validate.value.childLevel) return validate.value.childLevel;
+  return unassigned.value.find(item => item.oneId === form.childOneId)?.suggestedLevel ?? currentNode.value?.level ?? '';
+});
+const derivedHierarchyType = computed(() => LEVEL_HIER_TYPE[childLevel.value] ?? null);
 
 const nextLevelHint = computed(() => {
   const depth = currentNode.value?.depth ?? 0;
@@ -370,10 +392,11 @@ onMounted(async () => {
   await runCheck();
 });
 
-// 父子节点 / Payer 变化时自动重新校验（与提交时口径一致）
+// 父子节点 / Payer 变化时自动重新校验（与提交时口径一致）；层级类型随子节点级别自动推导
 watch(
   () => [form.parentOneId, form.childOneId, form.payerOneId],
   () => {
+    form.hierarchyType = derivedHierarchyType.value?.code ?? '';
     void runCheck();
   }
 );
@@ -406,7 +429,8 @@ const submit = async (): Promise<string> => {
 
   if (mode.value === 'request') {
     const message = await addHierarchyRelation({
-      hierarchyType: form.hierarchyType,
+      // 层级类型按子节点级别推导落库（与后端挂载时 _hier_type_by_level 同口径）
+      hierarchyType: derivedHierarchyType.value?.code ?? form.hierarchyType ?? 'LEGAL',
       relationType: form.relationType,
       parentId: form.parentOneId,
       childId: form.childOneId,

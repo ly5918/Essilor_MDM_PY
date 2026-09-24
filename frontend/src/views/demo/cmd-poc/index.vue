@@ -35,15 +35,21 @@
               {{ roleKey === 'gc' ? '进入待我决策' : '进入待我审批' }}
             </el-button>
           </div>
+          <!--
+            已生效主档 = 总设计「02 · 客户管理」：查询 + 主档详情 + 只读控制，不挂写入口。
+            新建客户与 OCR 属于「03 · 新建客户与 OCR」场景，统一收在「处理中申请」页，
+            避免同一动作在两个页重复出现、也避免主档页出现"发起"类按钮造成语义错位。
+          -->
           <div v-else-if="currentPage === 'customers' && roleKey === 'business'" class="page-title-actions">
-            <el-button plain @click="openDialog('ocr')">查看OCR识别结果</el-button>
-            <el-button type="primary" plain icon="Plus" @click="openDialog('newCustomer')">新建客户</el-button>
+            <span class="page-title-readonly">新建客户与 OCR 识别请在「处理中申请」页发起</span>
           </div>
           <!--
-            处理中申请页同样保留写入口：业务用户常在这里发现「少填了要再提一家 / 还有客户没录」，
-            提交成功后会停在本页（新申请落在列表首行），不必再退回主档页找入口。
+            处理中申请 = 申请台账，同时是「03 · 新建客户与 OCR」的场景入口：
+            OCR 与新建客户同源（新建客户弹窗内也提供「上传并OCR识别」并回填），
+            故两个入口放在同一页；提交成功后会停在本页（新申请落在列表首行）。
           -->
           <div v-else-if="currentPage === 'custapps' && roleKey === 'business'" class="page-title-actions">
+            <el-button plain @click="openDialog('ocr')">查看OCR识别结果</el-button>
             <el-button type="primary" plain icon="Plus" @click="openDialog('newCustomer')">新建客户</el-button>
           </div>
           <!-- 非 Business User 的客户页：不给写入口，用一行小字说明权限边界（测试报告 BUG-4） -->

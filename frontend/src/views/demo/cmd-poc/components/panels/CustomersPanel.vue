@@ -280,7 +280,7 @@
 
         <el-table-column label="当前节点" min-width="110" align="center">
           <template #default="{ row }">
-            <DetailValue :value="row.currentNodeName" tip="" />
+            <DetailValue :value="currentNodeText(row)" tip="" />
           </template>
         </el-table-column>
 
@@ -314,7 +314,7 @@
             <span class="cust-empty-tip">正在加载处理中申请…</span>
           </div>
           <span v-else-if="loadError">加载失败，请点击上方「重新加载」</span>
-          <span v-else>暂无在途申请</span>
+          <span v-else>暂无在途申请；已办结申请请到「已生效主档」或「流程中心 › 已完成的工作流」查看</span>
         </template>
       </el-table>
 
@@ -404,7 +404,7 @@ import { describeError } from '../../composables/loadError';
 import { useCmdPoc } from '../../composables/useCmdPoc';
 import { useListTableHeight } from '../../composables/useListTableHeight';
 import {
-  APPLICATION_STATUS_OPTIONS,
+  IN_FLIGHT_APPLICATION_STATUS_OPTIONS,
   BU_OPTIONS,
   CUSTOMER_STATUS_OPTIONS,
   CUSTOMER_TYPE_OPTIONS,
@@ -437,7 +437,7 @@ const view = ref<'master' | 'inFlight'>(props.defaultView ?? 'master');
 const viewHint = computed(() =>
   view.value === 'master'
     ? '仅含已发布为 Golden Record 的客户；尚未审批完成的申请见「处理中申请」'
-    : '尚未审批完成的申请（待审批 / 已退回）；审批通过后发布为「已生效主档」'
+    : '仅展示在途申请（待审批 / 已退回）；审批通过后自动发布为「已生效主档」，已办结申请请到「已生效主档」或「流程中心 › 已完成的工作流」回溯'
 );
 
 const loading = ref(true);
@@ -447,6 +447,7 @@ const query = ref<{ keyword: string; bu: string; customerType: string; status?: 
   keyword: '',
   bu: '',
   customerType: '',
+  // 不预置状态：下拉保持「全部状态」占位（该菜单的数据源本身就是在途申请，由后端兜底）
   status: undefined
 });
 const page = ref({ current: 1, size: 10 });
@@ -461,8 +462,10 @@ const appRows = ref<CustomerApplicationVO[]>([]);
 const appTotal = ref(0);
 /** 申请单在途条数角标已上移到左侧菜单（「客户管理 › 处理中申请」），面板内不再重复展示 */
 
-/** 状态下拉随视图切换：主档字典 / 申请单字典 */
-const statusOptions = computed(() => (view.value === 'master' ? CUSTOMER_STATUS_OPTIONS : APPLICATION_STATUS_OPTIONS));
+/** 状态下拉随视图切换：主档字典 / 处理中申请仅含在途口径（已办结不在该菜单展示） */
+const statusOptions = computed(() =>
+  view.value === 'master' ? CUSTOMER_STATUS_OPTIONS : IN_FLIGHT_APPLICATION_STATUS_OPTIONS
+);
 
 /**
  * 客户 → 层级归属（客户列表「层级归属」列）
@@ -676,6 +679,18 @@ const onViewFlow = (row: unknown) => {
     // 已拒绝的申请流程已走完 → done 视图；其余（待审批 / 退回）→ active 视图
     detailType: app.status === 'rejected' ? 'done' : 'active'
   });
+};
+
+/**
+ * 「当前节点」列展示：已办结申请（已发布 / 已拒绝）流程已走完、引擎没有"当前节点"，
+ * 任务行残留的节点名同样会误导（看起来还停在某个节点等审批），因此办结态优先显式说明；
+ * 仅在途申请显示引擎当前节点。
+ */
+const currentNodeText = (row: unknown): string => {
+  const app = row as CustomerApplicationVO;
+  if (app.status === 'approved') return '流程已办结 · 已发布';
+  if (app.status === 'rejected') return '流程已办结 · 已拒绝';
+  return app.currentNodeName || '';
 };
 
 /* ---------- 修改重报（两级审批闭环：BU 初审退回 → 申请人修改 → 重进 BU 初审） ---------- */

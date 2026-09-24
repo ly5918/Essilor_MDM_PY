@@ -289,6 +289,9 @@ async def flow_instances(
             "assigneeRole": r.get("assignee_role"),
             "priority": r.get("risk_level"),
             "status": r.get("status"),
+            # 判重结果随实例下发：前端「已激活工作流」列表直接标注 EXACT/SUSPECTED，
+            # 否则用户看不出这条工作流到底有没有触发疑似匹配（匹配证据在审批弹窗里）
+            "duplicateState": r.get("duplicate_state"),
             "currentNodeName": r.get("current_node_name"),
             "completedSteps": done, "totalSteps": total_steps,
             "progressPercent": pct,

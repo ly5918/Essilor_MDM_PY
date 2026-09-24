@@ -112,6 +112,18 @@ export const APPLICATION_STATUS_OPTIONS = (Object.keys(APPLICATION_STATUS_MAP) a
   label: APPLICATION_STATUS_MAP[value].label
 }));
 
+/**
+ * 「处理中申请」菜单专用下拉：只含在途口径（pending / returned）。
+ * 已办结（approved / rejected）不属于"处理中"，不在该菜单展示；
+ * 历史回溯走「已生效主档」（发布成功）或「流程中心 › 已完成的工作流」（全部轨迹）。
+ * 聚合项 value 传逗号分隔多状态，后端 list_applications 支持。
+ */
+export const IN_FLIGHT_APPLICATION_STATUS_OPTIONS = [
+  { value: 'pending,returned', label: '在途（待审批 / 已退回）' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'returned', label: 'Returned' }
+];
+
 export const CUSTOMER_STATUS_OPTIONS = (Object.keys(CUSTOMER_STATUS_MAP) as CustomerStatus[]).map(value => ({
   value,
   label: CUSTOMER_STATUS_MAP[value].label

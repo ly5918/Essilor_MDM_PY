@@ -477,6 +477,14 @@ const submitResult = ref<CustomerSubmitVO | null>(null);
 const keepOpenAfterSubmit = computed(() => submitResult.value !== null);
 
 /**
+ * 回执展开后主按钮已是「完成并关闭」，再次点击必须真的关窗。
+ * 此前只暴露了 keepOpenAfterSubmit 而漏掉 closeAfterConfirm，DialogHost 的关窗判定
+ * `closeAfterConfirm || !keepOpenAfterSubmit` 两个条件都不成立 → 弹窗永远关不掉，
+ * 每点一次「完成并关闭」就重复弹一条「本次提交已完成」。
+ */
+const closeAfterConfirm = computed(() => submitResult.value !== null);
+
+/**
  * 回执里点「匹配结论」/ 命中的 One ID：打开那条主档的详情。
  * <p>
  * 此前模板引用了不存在的 onViewMatched（点击直接抛错），提交人只能自己去列表里翻那条记录比对。
@@ -555,7 +563,7 @@ const submit = async (): Promise<string> => {
   return `客户申请已提交：One ID ${result.oneId ?? '-'}｜申请编号 ${result.taskNo ?? '-'}，已进入「${node}」，可在「客户管理 › 处理中申请」查看进度`;
 };
 
-defineExpose({ submit, keepOpenAfterSubmit, confirmText });
+defineExpose({ submit, keepOpenAfterSubmit, closeAfterConfirm, confirmText });
 </script>
 
 <style scoped lang="scss">

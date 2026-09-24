@@ -262,6 +262,10 @@
                     命中候选是<b>尚未审批完成的在途申请</b>（库里暂无该主体的已发布主档）：
                     不能「关联已有主档」，处置为撤回本单 / 确认为不同主体继续新建 / 退回修正
                   </span>
+                  <span v-else-if="isSameCodeCand" class="ap-cand-hint is-warn">
+                    命中主档与本申请的<b>统一社会信用代码一致</b>（同码即同一法人主体）：
+                    按 One ID 唯一性只能「确认合并 / 关联已有」，系统不提供排除新建入口
+                  </span>
                   <span v-else class="ap-cand-hint">确认关联后，本申请将转为对该 One ID 主档的更新，不再新建客户</span>
                 </div>
                 <div class="ap-cmp-head">
@@ -502,9 +506,15 @@ const isBatch = computed(() => detail.value?.scene === 'IMPORT');
  */
 const canMerge = computed(() => {
   const d = detail.value;
+  // 终态任务（已批准 / 已拒绝 / 已办结）不再提供「发起合并」入口：
+  // 尤其新建申请批准走「关联已有 One ID」语义时，其预生成 One ID 没有独立主档，
+  // 以它为合并源必然 404（实测 AP-20260924-0006 → GC-00000030 客户不存在）。
+  const st = (d?.status ?? '').toUpperCase();
+  const actionable = !st || st === 'PENDING' || st === 'RETURNED';
   return !!d?.oneId
     && /SUSPECTED|EXACT|疑似|重复/i.test(d.duplicate ?? '')
-    && !isInFlightCand.value;
+    && !isInFlightCand.value
+    && actionable;
 });
 
 /**
@@ -624,6 +634,20 @@ const candOneId = computed(() => {
 const isInFlightCand = computed(() => {
   const map = new Map(evidenceRows.value.map(row => [row.label, row.value]));
   return (map.get('在途申请') ?? '').trim() === '是' || (map.get('命中来源') ?? '').includes('在途');
+});
+/**
+ * 命中主档与本申请的统一社会信用代码一致（同码即同一法人主体）。
+ * <p>
+ * One ID 唯一性硬约束：同码已有生效主档时绝不新建第二条黄金记录，后端对此
+ * 场景不下发「排除重复·继续新建 / 创建新主档」（发布闸门会强制关联）。
+ * 提示文案必须同步说明「为什么没有新建按钮」，否则治理者会以为功能缺失——
+ * 与 isInFlightCand 同为按钮组口径的解释面，与后端 _same_code_hit 同源判定。
+ */
+const isSameCodeCand = computed(() => {
+  const map = new Map(evidenceRows.value.map(row => [row.label, row.value]));
+  const own = (map.get('信用代码') ?? '').trim();
+  const cand = (map.get('候选信用代码') ?? '').trim();
+  return !!own && !!cand && own === cand;
 });
 const candCrossBu = computed(() => {
   const map = new Map(evidenceRows.value.map(row => [row.label, row.value]));

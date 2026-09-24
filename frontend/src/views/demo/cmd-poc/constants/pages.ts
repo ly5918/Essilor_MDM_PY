@@ -13,7 +13,8 @@ export interface PocPageMeta {
 /** 原型中固定标题的页面；其余页面标题跟随角色菜单文案 */
 export const PAGE_META: Record<PageId, PocPageMeta> = {
   dash: { sub: '根据角色与Scope动态显示' },
-  customers: { title: 'Customer Management', sub: '客户创建、查看、OCR识别与数据权限控制' },
+  /** 对应总设计「02 · 客户管理」：查询 + 主档详情 + 只读控制，不含写入口（新建/OCR 在处理中申请页） */
+  customers: { title: 'Customer Management', sub: '客户主档统一查询、主档详情与只读控制' },
   /** 「客户管理」二级菜单的第二个子页：与主档视图分成两个页面，而不是同页 tab 切换 */
   custapps: { title: 'Customer Applications', sub: '已提交、尚未审批完成的客户申请，跟进当前节点与流程' },
   batch: { title: '批量导入中心', sub: '预检、DQ、匹配、治理、部分成功' },

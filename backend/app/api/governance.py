@@ -63,6 +63,13 @@ async def launch_merge(
             await conn.execute(
                 select(cust.c.one_id, cust.c.bu_scope)
                 .where(cust.c.one_id.in_([survivor, merged])))).mappings().all()}
+        # 主档存在性兜底：任一侧查不到就业务报错，不再往下建治理任务。
+        # 否则「申请批准后关联已有」的预生成 One ID（无主档）也能发起合并，
+        # 产出永远无法执行的幽灵 GOV/MG 任务（实测 GC-00000030 复现）。
+        missing = [oid for oid in (survivor, merged) if oid not in pair]
+        if missing:
+            return R.fail(f"合并失败：{'、'.join(missing)} 不存在存量主档"
+                          f"（常见于申请批准后已「关联已有 One ID」，预生成编号未落主档）", code=400)
         s_bu = pair.get(survivor, "")
         m_bu = pair.get(merged, "")
         cross_bu = not (s_bu and m_bu and s_bu == m_bu)

@@ -62,6 +62,22 @@
             <el-tag :type="riskTagType(row.priority)" size="small" effect="plain">{{ row.priority ?? '—' }}</el-tag>
           </template>
         </el-table-column>
+        <!-- 判重结果列：EXACT 同码精确重复 / SUSPECTED 疑似重复。
+             不标注的话，用户看不出哪条工作流触发了疑似匹配（匹配证据只在审批弹窗里） -->
+        <el-table-column label="判重" width="100" align="center">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.duplicateState === 'EXACT' || row.duplicateState === 'SUSPECTED'"
+              :content="dupTip(row.duplicateState)"
+              placement="top"
+            >
+              <el-tag :type="row.duplicateState === 'EXACT' ? 'danger' : 'warning'" size="small" effect="plain">
+                {{ row.duplicateState === 'EXACT' ? '精确重复' : '疑似重复' }}
+              </el-tag>
+            </el-tooltip>
+            <span v-else class="wv-dup-none">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="描述" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.bizType ?? '—' }} - {{ row.bizTitle ?? '—' }}</template>
         </el-table-column>
@@ -199,6 +215,12 @@ const statusTagType = (v: string) => STATUS_TAG[v] ?? 'info';
 const slaLabel = (v?: string) => (v === 'OVERDUE' ? '已超时' : v === 'DUE_SOON' ? '即将超时' : '正常');
 const slaTagType = (v?: string) => (v === 'OVERDUE' ? 'danger' : v === 'DUE_SOON' ? 'warning' : 'success');
 
+/** 判重徽标悬浮说明 */
+const dupTip = (v?: string) =>
+  v === 'EXACT'
+    ? '命中已生效主档且统一社会信用代码一致（同一法人主体），只能关联已有，不可新建'
+    : '疑似重复：名称/地址高度相似但信用代码不同，需人工治理确认（合并或确认为新主体）';
+
 const formatTime = (v?: string) => (v ? String(v).replace('T', ' ').slice(0, 16) : '—');
 
 onMounted(load);
@@ -253,5 +275,9 @@ onMounted(load);
   font-size: 12px;
   font-weight: 600;
   color: var(--el-color-primary);
+}
+
+.wv-dup-none {
+  color: var(--el-text-color-placeholder);
 }
 </style>

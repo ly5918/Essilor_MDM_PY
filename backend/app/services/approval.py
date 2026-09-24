@@ -127,6 +127,21 @@ def _is_duplicate_link_approval(task: dict) -> bool:
             and "候选One ID" in (task.get("evidence_json") or ""))
 
 
+def _same_code_hit(task: dict) -> bool:
+    """命中主档与本申请的**统一社会信用代码完全一致**（同码即同一法人主体）。
+
+    publish_customer 对同码命中强制关联（One ID 唯一性硬约束，不新建第二条
+    黄金记录），因此「排除重复·继续新建 / 创建新主档」在此场景下是兑现不了的
+    承诺——按钮组与接口守卫都必须按此收敛（2026-09-24 实测：同码单走
+    「排除重复·继续新建」被静默强制并入存量主档，治理者误以为新建成功）。
+    异码疑似（同名同址不同主体）不在此列，「确认为不同主体·继续新建」合法。
+    """
+    ev = _evidence_dict(task)
+    own = str(ev.get("信用代码") or "").strip().upper()
+    cand = str(ev.get("候选信用代码") or "").strip().upper()
+    return bool(own) and bool(cand) and own == cand
+
+
 # BU Scope 对**跨BU重复**不得执行的定案动作（总设计「故事一」：
 # 单条创建与跨BU识别 = Business User 创建 → BU 初审 → GC 决策 → 关联已有 One ID 并发布）。
 # 这里的护栏是服务端的最后一道闸：前端按钮组已经收敛，但接口仍可能被直接调用
@@ -242,7 +257,13 @@ def _build_actions(task: dict) -> list[dict]:
                 act("EXCLUDE", "确认为不同主体·继续新建", "warning"),
                 act("RETURN", _return_label(False, "修正信用代码"), "warning")]
     if _is_duplicate_link_approval(task):
+        same_code = _same_code_hit(task)
         if gc:
+            if same_code:
+                # 同码命中：One ID 唯一性硬约束下「创建新主档」必然被发布闸门
+                # 强制关联，与 BU 侧同理不下发新建入口——只保留关联 + 退回修复
+                return [act("MERGE", "确认关联已有", "primary"),
+                        act("RETURN", _return_label(True, "修复"), "warning")]
             # GC Scope 决策：跨BU确认关联已有、创建新主档或退回修复
             return [act("MERGE", "确认关联已有", "primary"),
                     act("CREATE_NEW", "创建新主档", "success"),
@@ -253,7 +274,14 @@ def _build_actions(task: dict) -> list[dict]:
             # 泳道图上「BU初审 → GC决策」的核心场景直接走不通：BUG-PY-06）
             return [act("ESCALATE", "升级GC决策", "primary"),
                     act("RETURN", _return_label(False, "补充"), "warning")]
-        # Same-BU：BU 直接决策
+        if same_code:
+            # 同码命中（EXACT 主路径）：统一社会信用代码一致即同一法人主体，
+            # publish_customer 会无视「排除」强制关联（One ID 唯一性），该按钮
+            # 只会误导治理者以为新建成功（2026-09-24 实测 4 单全被并入 GC-00000001）。
+            # 「确认为不同主体·继续新建」只留给异码疑似（同名/同址不同码）场景。
+            return [act("MERGE", "确认合并", "primary"),
+                    act("RETURN", _return_label(False, "补充"), "warning")]
+        # Same-BU：BU 直接决策（异码疑似：新建是设计允许的合法决策）
         return [act("MERGE", "确认合并", "primary"),
                 act("EXCLUDE", "排除重复·继续新建", "warning"),
                 act("RETURN", _return_label(False, "补充"), "warning")]
@@ -264,6 +292,45 @@ def _build_actions(task: dict) -> list[dict]:
     if not gc:
         actions.append(act("ESCALATE", "升级GC", "warning"))
     return actions
+
+
+async def _change_evidence_fallback(task: dict) -> dict:
+    """CUSTOMER_CHANGE 任务 evidence_json 为空时的兜底治理证据。
+
+    老数据（修复前提交的变更单）审批任务上没有 evidence_json，cmd_change_diff
+    也可能为空——审批弹窗此前显示「暂无治理证据」，看不到修改的内容。此处按
+    task_no（=变更单号）回查变更单 + 字段差异行，拼出与提交时同口径的证据：
+    有 diff 行展示「字段: Before → After」，停用类至少展示变更类型/目标状态/说明。
+    """
+    request_code = task.get("task_no") or ""
+    conn = await get_engine().connect()
+    try:
+        cr = (await conn.execute(
+            select(table("cmd_change_request")).where(
+                table("cmd_change_request").c.request_code == request_code))).mappings().first()
+        diff_rows = (await conn.execute(
+            select(table("cmd_change_diff")).where(
+                table("cmd_change_diff").c.request_code == request_code,
+                table("cmd_change_diff").c.del_flag == "0")
+            .order_by(table("cmd_change_diff").c.order_num))).mappings().all()
+    finally:
+        await conn.close()
+    cr = dict(cr) if cr else {}
+    type_text = "逻辑停用" if (cr.get("change_type") or "").upper() == "DEACTIVATE" else "属性变更"
+    evidence: dict = {"变更类型": type_text,
+                      "客户名称": cr.get("legal_name") or task.get("biz_title") or ""}
+    for r in diff_rows:
+        before = r["before_value"] if r["before_value"] not in (None, "") else "(空)"
+        after = r["after_value"] if r["after_value"] not in (None, "") else "(清空)"
+        key_mark = "（关键）" if r["is_key_field"] == "Y" else ""
+        evidence[f"{r['field_name']}{key_mark}"] = f"{before} → {after}"
+    if not diff_rows and (cr.get("change_type") or "").upper() == "DEACTIVATE":
+        evidence["状态（关键）"] = f"active → {(cr.get('target_status') or 'inactive')}"
+    if cr.get("target_status"):
+        evidence["目标状态"] = cr["target_status"]
+    if cr.get("change_reason"):
+        evidence["变更说明"] = cr["change_reason"]
+    return evidence
 
 
 async def task_detail(task_no: str) -> Optional[dict]:
@@ -282,6 +349,10 @@ async def task_detail(task_no: str) -> Optional[dict]:
     if row is None:
         return None
     task = dict(row)
+    # CUSTOMER_CHANGE：提交时未落 evidence_json 的老数据（含被退回单）兜底回查，
+    # 否则审批弹窗治理证据为空，看不到这条变更到底改了什么
+    if (task.get("biz_type") or "") == "CUSTOMER_CHANGE" and not task.get("evidence_json"):
+        task["evidence_json"] = await _change_evidence_fallback(task)
     dq = task.get("dq_score")
     status = (task.get("status") or "").upper()
     return {
@@ -367,6 +438,16 @@ async def do_action(task_no: str, action: str, actor: str,
 
         # 跨BU重复护栏（BUG-PY-06）：BU 不得对跨BU重复做定案，必须先升级 GC。
         _guard_cross_bu(task, action)
+
+        # 同码命中护栏：统一社会信用代码一致即同一法人主体，One ID 唯一性
+        # 不允许新建第二条黄金记录（publish_customer 对此强制关联）。按钮组已收敛，
+        # 但直调 API / 旧页面缓存仍可能送来 exclude/create_new——落库前明确拦住，
+        # 而不是静默强制关联让治理者误以为新建成功。
+        if (action or "").lower() in ("exclude", "create_new") and _same_code_hit(task):
+            raise RuntimeError(
+                "该申请与命中主档的统一社会信用代码一致（同码即同一法人主体），"
+                "按 One ID 唯一性必须关联已有主档、不能排除新建——"
+                "请选择「确认合并/关联已有」，或退回申请人修正信用代码")
 
         # 节点-动作匹配校验：ESCALATE 只能由 BU Scope 初审发起。若单子已停在
         # GC_REVIEW 还收到 ESCALATE（绕过 UI 直调 API / 并发双击），引擎会按默认流

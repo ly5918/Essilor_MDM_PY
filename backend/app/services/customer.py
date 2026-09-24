@@ -842,8 +842,17 @@ async def list_applications(status: Optional[str] = None, keyword: Optional[str]
     app = table("cmd_customer_application")
     task = table("cmd_approval_task")
     conds = [app.c.del_flag == "0"]
+    # 「处理中申请」口径：默认只回在途申请（pending / returned）。
+    # 已办结（approved / rejected）不属于"处理中"，历史回溯走「已生效主档」/「流程中心」。
+    # 显式传入 status（逗号分隔多状态）时按传入过滤。
     if status:
-        conds.append(app.c.status == status)
+        vals = [s.strip() for s in status.split(",") if s.strip()]
+    else:
+        vals = ["pending", "returned"]
+    if len(vals) == 1:
+        conds.append(app.c.status == vals[0])
+    elif vals:
+        conds.append(app.c.status.in_(vals))
     if keyword:
         like = f"%{keyword}%"
         conds.append(app.c.legal_name.like(like) | app.c.one_id.like(like) |

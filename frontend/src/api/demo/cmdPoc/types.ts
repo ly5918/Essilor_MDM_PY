@@ -2211,6 +2211,8 @@ export interface FlowInstanceVO {
   status: string;
   /** 当前节点名称 */
   currentNodeName?: string;
+  /** 判重结果：NEW 无重复 / SUSPECTED 疑似重复 / EXACT 精确重复（同码） */
+  duplicateState?: string;
   /** 已完成步骤数（泳道图口径） */
   completedSteps?: number;
   /** 总步骤数（泳道图口径） */

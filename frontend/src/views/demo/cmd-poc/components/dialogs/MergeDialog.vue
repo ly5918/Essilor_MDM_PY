@@ -14,6 +14,16 @@
       title="合并语义：源记录将并入目标 One ID（Golden Record 保持目标稳定），源记录状态变为「已合并」并保留 Legacy 交叉引用；该请求需 BU Scope 初审，跨BU时升级 GC Scope 决策。"
     />
 
+    <el-alert
+      v-if="sourceMissing"
+      class="m-b-12"
+      type="error"
+      :closable="false"
+      show-icon
+      title="该 One ID 没有可用的存量主档，不能作为合并源"
+      description="常见原因：这是一条新建申请的预生成编号，批准时已按「关联已有 One ID」语义并入存量主档（未落独立主档）。如需治理，请从「已生效主档」中选择真实记录发起合并。"
+    />
+
     <el-form label-width="110px">
       <el-form-item label="合并源">
         <el-input :model-value="`${payload?.oneId ?? ''} · ${payload?.name ?? ''}`" disabled />
@@ -50,7 +60,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { launchCustomerMerge, listCustomers, getCustomerDetail } from '@/api/demo/cmdPoc';
+import { launchCustomerMerge, listCustomers } from '@/api/demo/cmdPoc';
 import type { CustomerVO } from '@/api/demo/cmdPoc/types';
 
 defineOptions({ name: 'CmdPocMergeDialog' });
@@ -62,10 +72,15 @@ const candidates = ref<MergeCandidate[]>([]);
 const targetOneId = ref('');
 const reason = ref('');
 const submitting = ref(false);
+/** 合并源在存量主档中不存在（典型：申请批准后「关联已有」，预生成 One ID 未落主档） */
+const sourceMissing = ref(false);
 
 /** 提交（DialogHost 底部「发起合并申请」按钮调用） */
 const submit = async (): Promise<string> => {
   const sourceOneId = String(props.payload?.oneId ?? '');
+  if (sourceMissing.value) {
+    throw new Error('该 One ID 没有存量主档，不能作为合并源（见弹窗顶部说明）');
+  }
   if (!targetOneId.value) {
     throw new Error('请选择合并目标 One ID');
   }
@@ -80,13 +95,17 @@ const submit = async (): Promise<string> => {
 
 onMounted(async () => {
   const sourceOneId = String(props.payload?.oneId ?? '');
-  // 取源主档详情（名称 / 信用代码），用于收敛重复候选
-  const source = sourceOneId ? await getCustomerDetail(sourceOneId).catch(() => null) : null;
-  const srcName = (source?.legalName ?? String(props.payload?.name ?? '')).trim();
-  const srcCode = (source?.creditCode ?? '').trim();
-  // 候选目标 = 存量 active 主档中与源构成重复命中的记录（同名 或 同信用代码），排除自身与已合并
+  // 一次列表拉取同时解决两件事：
+  // 1) 源记录信息（名称 / 信用代码）——不再调 getCustomerDetail：
+  //    对「申请批准后关联已有」的预生成 One ID（如 GC-00000030）该接口 404，
+  //    axios 拦截器会全局弹「客户不存在」错误（MergeDialog 里 catch 也拦不住 toast）；
+  // 2) 候选目标 = 存量 active 主档中与源构成重复命中的记录（同名 或 同信用代码），排除自身与已合并
   const page = await listCustomers({ pageNum: 1, pageSize: 200 });
   const rows = (page.rows ?? []) as MergeCandidate[];
+  const source = rows.find(item => item.oneId === sourceOneId);
+  sourceMissing.value = !source || source.status !== 'active';
+  const srcName = (source?.legalName ?? String(props.payload?.name ?? '')).trim();
+  const srcCode = (source?.creditCode ?? '').trim();
   candidates.value = rows
     .filter(item => {
       if (!item.oneId || item.oneId === sourceOneId || item.status !== 'active') return false;

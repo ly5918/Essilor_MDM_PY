@@ -16,8 +16,8 @@
         <div class="card-head">
           <span class="card-title">导入任务列表</span>
           <!--
-            默认只列「待处置」任务，与左侧菜单「批量治理」角标同一口径：
-            此前角标统计待处置、列表却展示全部任务，出现「角标 6、列表 0」的矛盾（测试报告 BUG-5）。
+            默认**不勾选**：列表默认展示全部任务（含已办结），需要跟进时再手动勾选切到「待处置」。
+            KPI「待处置任务」与菜单角标走独立统计接口，不受此处开关影响，口径始终一致。
           -->
           <div class="card-toolbar-right">
             <el-checkbox v-model="pendingOnly" @change="onTogglePending">仅看待处置（与菜单角标一致）</el-checkbox>
@@ -116,8 +116,10 @@ const jobs = ref<ImportJobVO[]>([]);
 const pageNum = ref(1);
 const pageSize = ref(10);
 const total = ref(0);
-/** 只看「待处置」任务（与菜单「批量治理」角标同口径，默认开启） */
-const pendingOnly = ref(true);
+/** 只看「待处置」任务：默认**不勾选**，列表默认展示全部任务（含已办结）。
+ *  角标口径不依赖这个开关：KPI「待处置任务」与左侧菜单角标由 loadPendingTotal() 单独统计，
+ *  因此默认展示全部不会再出现「角标 6、列表 0」的错位（测试报告 BUG-5 的成因是统计源不同，不是列表默认值）。 */
+const pendingOnly = ref(false);
 /** 待处置任务总数（始终按角标口径统计，不受列表筛选影响） */
 const pendingTotal = ref(0);
 

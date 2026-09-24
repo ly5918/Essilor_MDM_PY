@@ -83,6 +83,19 @@ class ApprovalAction(BaseModel):
     opinion: Optional[str] = None
 
 
+class ChangeDiffItem(BaseModel):
+    """字段级变更行（前端 ChangeRequestDialog 采集，camelCase 兼容）。
+
+    Before 由服务端从主档当前值回填（与 UI 提示「服务端用主档当前值补全 Before」一致），
+    前端只上传 fieldCode / fieldName / afterValue。
+    """
+    model_config = pydantic.ConfigDict(populate_by_name=True)
+
+    field_code: str = Field(validation_alias=AliasChoices("fieldCode", "field_code"))
+    field_name: Optional[str] = Field(None, validation_alias=AliasChoices("fieldName", "field_name"))
+    after_value: str = Field("", validation_alias=AliasChoices("afterValue", "after_value"))
+
+
 class ChangeSubmit(BaseModel):
     one_id: str
     change_type: str = "UPDATE"
@@ -90,6 +103,10 @@ class ChangeSubmit(BaseModel):
     bu_scope: Optional[str] = None
     target_status: Optional[str] = None
     is_key_change: Optional[str] = "N"
+    effective_date: Optional[str] = None
+    # 字段级变更明细：此前后端直接丢弃该入参，导致 cmd_change_diff 无数据、
+    # 审批弹窗治理证据「没有修改的内容」（总设计要求 Before/After 证据链落库）。
+    diffs: Optional[list[ChangeDiffItem]] = None
 
 
 class ChangeResubmit(BaseModel):

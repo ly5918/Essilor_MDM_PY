@@ -91,8 +91,9 @@ const customerCenterMenu = (label: string): PocMenu => ({
   label,
   icon: '客',
   children: [
-    { id: 'customers', label: '已生效主档', icon: '档' },
-    { id: 'custapps', label: '处理中申请', icon: '申', badge: 'inFlight' }
+    // 「处理中申请」在前：申请跟进是高频入口，且挂常驻在途角标
+    { id: 'custapps', label: '处理中申请', icon: '申', badge: 'inFlight' },
+    { id: 'customers', label: '已生效主档', icon: '档' }
   ]
 });
 
