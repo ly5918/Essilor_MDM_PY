@@ -1863,6 +1863,16 @@ export const cancelChangeRequest = async (requestCode: string): Promise<string> 
   return '申请已撤回，关联审批待办同步取消';
 };
 
+/** 被退回变更单「修改重报」（仅 RETURNED；改原因后重进 BU Scope 初审） */
+export const resubmitChangeRequest = async (
+  requestCode: string,
+  data: { changeReason?: string; targetStatus?: string; remark?: string },
+): Promise<string> => {
+  if (!useLive('change')) return delay('修改重报成功，已重新进入 BU Scope 初审');
+  await unwrap(request({ url: `/cmd/change/${requestCode}/resubmit`, method: 'post', data }));
+  return '修改重报成功，已重新进入 BU Scope 初审';
+};
+
 /* ============================== 9. 审批 ============================== */
 export const getApprovalFlow = (key: string): Promise<ApprovalFlowVO> =>
   USE_MOCK
@@ -1886,7 +1896,9 @@ const SLA_TEXT: Record<string, string> = { NORMAL: '正常', DUE_SOON: '临近',
 export const BIZ_TYPE_TEXT: Record<string, string> = {
   IMPORT: '批量导入确认',
   CHANGE: '客户变更',
-  MERGE: '跨BU合并'
+  // 合并不再武断标注「跨BU」：是否跨BU由后端按两条主档的 bu_scope 实际判定
+  // （cross_bu_flag），同BU合并 BU 可直接定案，跨BU合并才升级 GC 决策
+  MERGE: '客户合并'
 };
 
 /** 场景编码 → 页面显示名（「来源」列：这条待办由哪条业务流产生） */
@@ -2137,8 +2149,8 @@ const mapGraph = (g?: FlowTraceVO['graph'] & {
       x: n.x ?? 0,
       y: n.y ?? 0,
       // 状态白名单必须与后端 swimlane 的步骤状态全集一致：
-      // 漏掉 RETURNED / TERMINATED 会被静默降级成「待执行」（退回节点看不出来）
-      status: (['COMPLETED', 'CURRENT', 'RETURNED', 'PENDING', 'TERMINATED'].includes(n.status ?? '')
+      // 漏掉 RETURNED / TERMINATED / SKIPPED 会被静默降级成「待执行」（退回/跳过节点看不出来）
+      status: (['COMPLETED', 'CURRENT', 'RETURNED', 'PENDING', 'TERMINATED', 'SKIPPED'].includes(n.status ?? '')
         ? n.status
         : 'PENDING') as FlowGraphNodeVO['status'],
       approver: n.approver,
@@ -2167,7 +2179,7 @@ export const getFlowTrace = async (taskNo: string, detailType = 'create'): Promi
     nodeType: (['AUTO', 'MANUAL', 'GATEWAY'].includes(s.nodeType ?? '')
       ? s.nodeType
       : 'AUTO') as FlowTraceVO['steps'][number]['nodeType'],
-    status: (['COMPLETED', 'CURRENT', 'RETURNED', 'PENDING', 'TERMINATED'].includes(s.status ?? '')
+    status: (['COMPLETED', 'CURRENT', 'RETURNED', 'PENDING', 'TERMINATED', 'SKIPPED'].includes(s.status ?? '')
       ? s.status
       : 'PENDING') as FlowTraceVO['steps'][number]['status'],
     assignee: s.assignee,
@@ -2311,7 +2323,10 @@ export const listFlowInstances = async (query: FlowInstanceQuery = {}): Promise<
         || (runState === 'NEW' && !r.engineBound);
       return matchKw && matchStatus && matchBiz && matchRun;
     });
-    return delay({ rows, total: rows.length });
+    // mock 分支同样按 pageNum/pageSize 切片，口径与 live 分页一致
+    const pn = Math.max(1, query.pageNum ?? 1);
+    const ps = Math.max(1, query.pageSize ?? 10);
+    return delay({ rows: rows.slice((pn - 1) * ps, pn * ps), total: rows.length });
   }
   return unwrap<PageResult<FlowInstanceVO>>(
     request({ url: '/cmd/flow/instances', method: 'get', params: { pageNum: 1, pageSize: 100, ...query } })

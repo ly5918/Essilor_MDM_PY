@@ -181,10 +181,15 @@
               </template>
               <template v-else>
                 <span class="ap-quick-hint is-closed">
-                  该任务当前状态为「{{ rowStatusText(detail.status) }}」，无可执行动作
-                  <template v-if="detail.finishTime">（{{ detail.finishTime }} 办结）</template>
+                  <template v-if="(detail.status ?? '').toUpperCase() === 'RETURNED'">
+                    已退回申请人修改重报：等待申请人在「客户管理 → 处理中申请」重新提交后，本单回到待办
+                  </template>
+                  <template v-else>
+                    该任务当前状态为「{{ rowStatusText(detail.status) }}」，无可执行动作
+                    <template v-if="detail.finishTime">（{{ detail.finishTime }} 办结）</template>
+                  </template>
                 </span>
-                <!-- 已办结仍要看完整治理证据：弹窗保留为只读详情，只是动作区换成状态说明 -->
+                <!-- 已办结/已退回仍要看完整治理证据：弹窗保留为只读详情，只是动作区换成状态说明 -->
                 <el-button plain icon="View" @click="openApproval">查看详情</el-button>
               </template>
             </div>
@@ -338,9 +343,13 @@
               <div v-else class="ap-foot-closed">
                 <el-tag :type="rowStatusTag(detail.status)" effect="dark">{{ rowStatusText(detail.status) }}</el-tag>
                 <span class="ap-foot-closed-text">
-                  该任务已办结，不再提供审批动作
+                  <template v-if="(detail.status ?? '').toUpperCase() === 'RETURNED'">
+                    该单已退回申请人修改重报，审批侧暂无动作；申请人在「处理中申请」重新提交后回到待办
+                  </template>
+                  <template v-else>
+                    该任务已办结，不再提供审批动作
+                  </template>
                   <template v-if="detail.submitTime">｜提交 {{ detail.submitTime }}</template>
-                  <template v-if="detail.finishTime">｜办结 {{ detail.finishTime }}</template>
                   <template v-if="detail.opinion">｜意见：{{ detail.opinion }}</template>
                 </span>
                 <el-button plain icon="Share" @click="onOpenFlowTrace">查看处理过程</el-button>
@@ -430,17 +439,16 @@ const TABS = [
   { key: 'done', label: '我已处理', category: 'DONE' }
 ] as const;
 
-const TASK_TYPE_OPTIONS = ['客户新建', '客户变更', '逻辑停用', '层级关系', '疑似重复', '跨BU合并', 'DQ异常', '批量治理', '批量导入确认'];
+const TASK_TYPE_OPTIONS = ['客户新建', '客户变更', '逻辑停用', '层级关系', '疑似重复', '客户合并', 'DQ异常', '批量治理', '批量导入确认'];
 const BU_OPTIONS = ['High End', 'Mainstream', 'Cross-BU'];
 
 /**
  * 任务类型筛选项（页面筛选条下拉）
  *
  * 后端 bizType 实际值：客户新建 / 客户新建 - OCR（单条创建，含 OCR 来源）、
- * 层级关系、跨BU合并、批量导入确认（IMPORT）等。
- *
- * 「批量导入确认」是**批次级审批**：一条导入任务对应一条审批待办，
- * 批准后为批次内 New 行逐条生成 One ID（总设计场景二节点「批量处理结果」）。
+ * 层级关系、客户合并（MERGE，按 cross_bu_flag 如实展示，跨BU单显示「跨BU合并」）、
+ * 批量导入确认（IMPORT）等。本列表 taskType 统一走 BIZ_TYPE_TEXT 映射 → 「客户合并」，
+ * 故筛选项不再保留旧的「跨BU合并」（选了会匹配不到任何行）。
  */
 
 const kpis = ref<ApprovalKpiVO[]>([]);

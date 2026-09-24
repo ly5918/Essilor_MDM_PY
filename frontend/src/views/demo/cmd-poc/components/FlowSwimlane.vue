@@ -114,6 +114,7 @@
               :fill="fillOf(n)"
               :stroke="strokeOf(n)"
               :stroke-width="selected?.nodeCode === n.nodeCode ? 2.5 : 1.5"
+              :stroke-dasharray="n.status === 'SKIPPED' ? '5 3' : undefined"
             />
             <polygon
               v-else-if="n.shape === 'DIAMOND'"
@@ -121,6 +122,7 @@
               :fill="fillOf(n)"
               :stroke="strokeOf(n)"
               :stroke-width="selected?.nodeCode === n.nodeCode ? 2.5 : 1.5"
+              :stroke-dasharray="n.status === 'SKIPPED' ? '5 3' : undefined"
             />
             <circle
               v-else
@@ -130,6 +132,7 @@
               :fill="fillOf(n)"
               :stroke="strokeOf(n)"
               :stroke-width="selected?.nodeCode === n.nodeCode ? 2.5 : 1.5"
+              :stroke-dasharray="n.status === 'SKIPPED' ? '5 3' : undefined"
             />
             <text :x="n.x" :y="n.y + 4" class="fg-node-icon" text-anchor="middle">{{ iconOf(n) }}</text>
             <text
@@ -338,6 +341,7 @@ const NODE_STATUS_TEXT: Record<string, string> = {
   CURRENT: '进行中',
   RETURNED: '已退回',
   TERMINATED: '已终止',
+  SKIPPED: '已跳过',
   PENDING: '待执行'
 };
 const NODE_STATUS_TAG: Record<string, 'success' | 'primary' | 'warning' | 'danger' | 'info'> = {
@@ -345,6 +349,7 @@ const NODE_STATUS_TAG: Record<string, 'success' | 'primary' | 'warning' | 'dange
   CURRENT: 'primary',
   RETURNED: 'warning',
   TERMINATED: 'danger',
+  SKIPPED: 'info',
   PENDING: 'info'
 };
 const nodeStatusText = (v?: string) => NODE_STATUS_TEXT[v ?? ''] ?? '待执行';

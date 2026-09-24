@@ -9,7 +9,7 @@ from sqlalchemy import select, func, desc
 
 from ..core.db import get_engine, table
 from ..core.query import list_table
-from ..schemas import R, ChangeSubmit
+from ..schemas import R, ChangeSubmit, ChangeResubmit
 from ..services import sequence as seq
 
 router = APIRouter(prefix="/cmd/change", tags=["变更"])
@@ -55,11 +55,17 @@ async def change_list(
 async def submit_change(payload: ChangeSubmit):
     engine = get_engine()
     async with engine.begin() as conn:
+        # 客户名称取主档法人名称：此前直接把 one_id 写进 legal_name，
+        # 停用/变更列表「客户名称」列显示成 GC-00000004（总设计要求展示客户名称）
+        cust = (await conn.execute(
+            select(table("cmd_customer").c.legal_name)
+            .where(table("cmd_customer").c.one_id == payload.one_id))).scalar()
+        legal_name = cust or payload.one_id
         request_code = await seq.gen_code(conn, "CH-", 4, "CHANGE")
         rid = await seq.next_id(conn, "cmd_change_request")
         await conn.execute(table("cmd_change_request").insert().values(
             id=rid, request_code=request_code, one_id=payload.one_id,
-            legal_name=payload.one_id, change_type=payload.change_type,
+            legal_name=legal_name, change_type=payload.change_type,
             change_reason=payload.change_reason, bu_scope=payload.bu_scope,
             target_status=payload.target_status, is_key_change=payload.is_key_change,
             status="PENDING", del_flag="0", create_by=0, create_time=datetime.now(),
@@ -87,6 +93,67 @@ async def submit_change(payload: ChangeSubmit):
                          operator_name="applicant", operator_role="BU_USER",
                          opinion=payload.change_reason or "")
     return R.ok({"request_code": request_code}, msg="变更申请已提交")
+
+
+@router.post("/{request_code}/resubmit")
+async def resubmit_change(request_code: str, payload: ChangeResubmit):
+    """被退回变更单「修改重报」（总设计：BU Scope 退回或补充材料 → 申请人修改后重进初审）。
+
+    - 仅 status=RETURNED 可重报；仅更新传入的非空字段（变更原因 / 目标状态）；
+    - 变更单状态 RETURNED → PENDING，审批任务行重开到 BU Scope 初审；
+    - 流程实例用 reset_instance_node 真正拉回 BU_REVIEW 等待位（与新建申请重报同机制）。
+    """
+    from ..services.trace import log_action, log_step
+    from ..workflow.engine import reset_instance_node
+
+    engine = get_engine()
+    async with engine.begin() as conn:
+        t = table("cmd_change_request")
+        row = (await conn.execute(
+            select(t).where(t.c.request_code == request_code, t.c.del_flag == "0")
+        )).mappings().first()
+        if row is None:
+            return R.fail("变更单不存在", code=400)
+        if (row["status"] or "") != "RETURNED":
+            return R.fail(f"仅被退回的变更单可修改重报（当前状态：{row['status']}）", code=400)
+
+        updates: dict = {k: v for k, v in {
+            "change_reason": (payload.change_reason or "").strip() or None,
+            "target_status": (payload.target_status or "").strip() or None,
+        }.items() if v}
+        remark = (payload.remark or "").strip() or "修改重报"
+        applicant = (payload.applicant_name or "").strip() or "Business User"
+
+        # 1) 变更单：改字段 + 状态回 PENDING
+        await conn.execute(t.update().where(t.c.request_code == request_code).values(
+            **updates, status="PENDING", update_time=datetime.now()))
+        # 2) 审批任务行：重开到 BU Scope 初审（BU 队列可见）
+        await conn.execute(table("cmd_approval_task").update()
+                           .where(table("cmd_approval_task").c.task_no == request_code)
+                           .values(status="PENDING", scope="BU",
+                                   current_node_code="BU_REVIEW", current_node_name="BU初审",
+                                   assignee_role="BU_STEWARD", submit_time=datetime.now()))
+        # 3) 流程实例镜像 + 引擎：拉回 BU_REVIEW READY 位
+        await reset_instance_node(request_code, "BU_REVIEW")
+        # 4) 轨迹：时间线 + 步骤条体现「修改重报」
+        await log_action(
+            conn, task_id=row["id"], task_no=request_code, one_id=row["one_id"],
+            action_type="RESUBMIT", action_name=remark,
+            from_node_code="APPLY", to_node_code="BU_REVIEW",
+            operator_name=applicant, operator_role="BU_USER",
+            opinion=updates.get("change_reason") or remark,
+        )
+        await log_step(
+            conn, one_id=row["one_id"], task_no=request_code,
+            step_type="BUSINESS", node_code="BU_REVIEW", node_name="BU Scope 初审",
+            action_type="RESUBMIT", action_name=remark,
+            operator_name=applicant, operator_role="BU_USER",
+            from_status="RETURNED", to_status="PENDING",
+            opinion=updates.get("change_reason") or remark,
+        )
+    return R.ok({"requestCode": request_code, "status": "PENDING",
+                 "currentNodeName": "BU Scope 初审"},
+                msg="修改重报成功，已重新进入 BU Scope 初审")
 
 
 @router.get("/fields")

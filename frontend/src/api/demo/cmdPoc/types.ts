@@ -1785,7 +1785,7 @@ export interface ApprovalTaskVO {
   oneId?: string;
   /** 客户名称或主题 */
   customerName: string;
-  /** 任务类型：客户创建 / 层级关系 / DQ异常 / 疑似重复 / 批量治理 / 跨BU合并 / 合并审批 */
+  /** 任务类型：客户创建 / 层级关系 / DQ异常 / 疑似重复 / 批量治理 / 客户合并（跨BU单显示「跨BU合并」）/ 合并审批 */
   taskType: string;
   /** 来源：单条申请 / 业务申请 / 规则触发 / 批量导入 / Import Job / BU升级 / 系统规则 / 月度Review */
   source: string;
@@ -1866,8 +1866,9 @@ export interface ApprovalTaskDetailVO {
 /** ------------------------------------------------------------------
  * 8.2 流程跟踪（泳道图步骤条 + Warm-Flow 实例进度，参考 HCP Merge 流程跟踪视图）
  * ------------------------------------------------------------------ */
-/** 步骤执行状态。RETURNED＝走过但被退回作废（需重做），与「已终止」不同：实例仍在运行 */
-export type FlowStepStatus = 'COMPLETED' | 'CURRENT' | 'RETURNED' | 'PENDING' | 'TERMINATED';
+/** 步骤执行状态。RETURNED＝走过但被退回作废（需重做），与「已终止」不同：实例仍在运行；
+ *  SKIPPED＝网关未经过该节点（如同BU合并 BU 直达办结，GC 决策未参与），仅在办结态出现 */
+export type FlowStepStatus = 'COMPLETED' | 'CURRENT' | 'RETURNED' | 'PENDING' | 'TERMINATED' | 'SKIPPED';
 
 /** 泳道图单步骤（场景模板 + 实时轨迹合并） */
 export interface FlowTraceStepVO {
@@ -2253,6 +2254,9 @@ export interface FlowTraceVO {
   status: string;
   /** 已退回：实例被打回上游，下游节点完成度作废（前端据此提示「需重做」） */
   returned?: boolean;
+  /** 退回发起节点：最后一次 RETURN 动作的来源节点（后端以动作流水为准下发） */
+  returnedFrom?: string;
+  returnedFromName?: string;
   currentNodeName: string;
   assigneeName?: string;
   assigneeRole?: string;

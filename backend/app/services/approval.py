@@ -140,6 +140,9 @@ def _cross_bu_needs_gc(task: dict) -> bool:
         return False
     if (task.get("scope") or "").upper() == "GC":
         return False
+    # 合并审批（MERGE）同样不得由 BU 对跨BU单定案：合并执行是 GC 决策的专属回调
+    if (task.get("biz_type") or "") == "MERGE":
+        return True
     return _is_duplicate_link_approval(task) or _is_in_flight_duplicate(task)
 
 
@@ -150,6 +153,15 @@ def _guard_cross_bu(task: dict, action: str) -> None:
             "该申请命中的是其它 BU 的同信用代码记录（跨BU重复），"
             "按治理口径须由 GC Scope 做合并/新建决策——请先「升级GC决策」，"
             "BU 侧不能直接批准或排除该重复")
+    # 合并单补充护栏：reject 不在 _CROSS_BU_BU_FORBIDDEN 里（在途重复场景 BU 允许
+    # 「确认重复·撤回本单」），但对跨BU合并，拒绝合并同样是定案——只有 GC 能做。
+    if ((task.get("biz_type") or "") == "MERGE"
+            and (task.get("cross_bu_flag") or "N") == "Y"
+            and (task.get("scope") or "").upper() != "GC"
+            and (action or "").lower() == "reject"):
+        raise RuntimeError(
+            "跨BU合并须由 GC Scope 定案——请「升级GC决策」或「退回发起人复核」，"
+            "BU 侧不能直接拒绝合并")
 
 
 def _approve_label(task: dict) -> str:
@@ -185,34 +197,50 @@ def _build_actions(task: dict) -> list[dict]:
     status = (task.get("status") or "").upper()
     if status in _FINAL_STATUSES:
         # 终态任务（已批准/已拒绝/已取消/已完成）不再显示操作按钮。
-        # RETURNED 不是终态：退回只是打回上游，单子仍在流程内，必须继续给按钮，
-        # 否则 BU Scope 收到 GC 退回来的单子只能看不能办（口径见 _FINAL_STATUSES）。
+        return []
+    if status in _RETURNED_STATUSES:
+        # 已退回申请人：RETURNED 只会由「BU 初审退回申请人」产生（GC 退回落
+        # BU_REVIEW 时是 PENDING，正常留在 BU 待办里继续办），此时球在申请人手上——
+        # 修改重报走「客户管理 → 处理中申请 → 修改重报」。审批侧不下发任何动作按钮，
+        # 只读跟踪；否则 steward 可对停在「创建客户申请」的单子直接批准/升级，
+        # 绕开申请人的修改步骤，违反总设计的两级审批闭环。
         return []
     gc = (task.get("scope") or "").upper() == "GC"
     act = lambda key, label, type_: {"key": key, "label": label, "type": type_}
     biz_type = task.get("biz_type") or ""
     if biz_type == "MERGE":
-        # 跨BU客户合并：批准即「确认合并」——执行 Golden Record 合并 / 行级关联
+        # 客户合并（swimlane._merge_scene：BU初审 → GC决策 两级）：
+        # · GC Scope 决策（scope=GC）：定案——批准即执行 Golden Record 合并 / 行级关联
+        # · BU Scope 初审 + 跨BU（cross_bu_flag=Y）：无权定案，只能升级GC或退回发起人复核
+        #   （旧版把「确认合并/拒绝合并」原样发给 BU——跨BU合并会被 BU 绕开 GC 定案）
+        # · Same-BU 合并：BU 直接定案
+        if gc:
+            return [act("APPROVE", "确认合并", "primary"),
+                    act("REJECT", "拒绝合并", "danger"),
+                    act("RETURN", _return_label(True), "warning")]
+        if task.get("cross_bu_flag") == "Y":
+            return [act("ESCALATE", "升级GC决策", "primary"),
+                    act("RETURN", "退回发起人复核", "warning")]
         return [act("APPROVE", "确认合并", "primary"),
                 act("REJECT", "拒绝合并", "danger"),
-                act("RETURN", _return_label(gc), "warning")]
+                act("RETURN", "退回发起人复核", "warning")]
     if _is_in_flight_duplicate(task):
         # 命中的是在途申请（对方还不是主档）：处置是「撤回本单 / 确认为不同主体 / 退回修正」，
         # 不提供「关联已有主档」——合并到一个尚不存在的主档在业务上不成立
         if gc:
             return [act("REJECT", "确认重复·撤回本单", "danger"),
                     act("CREATE_NEW", "确认为不同主体·继续新建", "warning"),
-                    act("RETURN", _return_label(True, "修正信用代码"), "info")]
+                    act("RETURN", _return_label(True, "修正信用代码"), "warning")]
         if task.get("cross_bu_flag") == "Y":
             # 跨BU在途重复：BU 无权单方定案（总设计「故事一」：BU初审→GC决策→关联已有并发布）。
             # 「确认为不同主体·继续新建」会把同码主体在另一个 BU 落成独立 Active 记录，
             # 直接绕开 GC——因此 BU 侧只保留「升级GC决策 / 撤回本单 / 退回」。
             return [act("ESCALATE", "升级GC决策", "primary"),
                     act("REJECT", "确认重复·撤回本单", "danger"),
-                    act("RETURN", _return_label(False, "修正信用代码"), "info")]
+                    act("RETURN", _return_label(False, "修正信用代码"), "warning")]
         return [act("REJECT", "确认重复·撤回本单", "danger"),
                 act("EXCLUDE", "确认为不同主体·继续新建", "warning"),
-                act("RETURN", _return_label(False, "修正信用代码"), "info")]
+                act("RETURN", _return_label(False, "修正信用代码"), "warning")]
     if _is_duplicate_link_approval(task):
         if gc:
             # GC Scope 决策：跨BU确认关联已有、创建新主档或退回修复
@@ -224,17 +252,17 @@ def _build_actions(task: dict) -> list[dict]:
             # 不给「排除重复·继续新建」（否则会在另一个 BU 落成同码独立主档，
             # 泳道图上「BU初审 → GC决策」的核心场景直接走不通：BUG-PY-06）
             return [act("ESCALATE", "升级GC决策", "primary"),
-                    act("RETURN", _return_label(False, "补充"), "info")]
+                    act("RETURN", _return_label(False, "补充"), "warning")]
         # Same-BU：BU 直接决策
         return [act("MERGE", "确认合并", "primary"),
                 act("EXCLUDE", "排除重复·继续新建", "warning"),
-                act("RETURN", _return_label(False, "补充"), "info")]
+                act("RETURN", _return_label(False, "补充"), "warning")]
     # 默认分支：客户新建 NEW / 变更 / 停用 / 层级 / 批量导入确认等（无合并语义）
     actions = [act("APPROVE", _approve_label(task), "primary"),
                act("REJECT", "拒绝", "danger"),
                act("RETURN", _return_label(gc), "warning")]
     if not gc:
-        actions.append(act("ESCALATE", "升级GC", "info"))
+        actions.append(act("ESCALATE", "升级GC", "warning"))
     return actions
 
 
@@ -321,6 +349,14 @@ async def do_action(task_no: str, action: str, actor: str,
         if (task.get("status") or "").upper() in _FINAL_STATUSES:
             raise RuntimeError(f"任务已办结（{task.get('status')}），不能重复审批: {task_no}")
 
+        # 已退回申请人（RETURNED）拒绝审批侧动作：单子停在「创建客户申请」等申请人
+        # 修改重报，此节点由申请人通过 resubmit 接口推进。若放行 steward 的
+        # 批准/升级，引擎会从 APPLY 按默认流走完并误发布主档（与「升级/拒绝被当批准」
+        # 同源的事故口径）。退回单在审批侧只读，可见不可办。
+        if (task.get("status") or "").upper() in _RETURNED_STATUSES:
+            raise RuntimeError(
+                f"该单已退回申请人修改重报，等待申请人重新提交后再审: {task_no}")
+
         # 审批意见必填：审批轨迹是 Auditor 的最终证据链（总设计「每一步均形成状态、版本、
         # 差异和审计证据」），空意见会让轨迹只剩「谁点了什么」，无法还原判断依据。
         # 前端已按未填写置灰全部动作按钮，这里再做一道服务端闸门——
@@ -347,20 +383,12 @@ async def do_action(task_no: str, action: str, actor: str,
         next_role = result.get("role")
 
         is_return = action == "return"
-        # 引擎镜像要落到哪个节点（退回 / 退回后重新流转时用，见文末 reset_instance_node 调用）
+        # 引擎镜像要落到哪个节点（退回时用，见文末 reset_instance_node 调用）
         mirror_to: Optional[str] = None
-
-        # ---- 退回后重新流转：按退回目标节点推出本次动作的落点 --------------
-        # 退回那一跳已把引擎实例判成 COMPLETED（BPMN 无 return 分支，退回是 Python 侧
-        # 改节点模拟的，见 reset_instance_node），所以对一张 RETURNED 的任务再收到动作时，
-        # 引擎几乎必然回「流程走完 + outcome=approved」——照单全收会把「升级GC」执行成
-        # 「流程结束 → 发布主档」。退回目标节点才是新的当前节点，据此纠正落点。
-        resuming = (task.get("status") or "").upper() in _RETURNED_STATUSES
-        if resuming and action == "escalate":
-            node, next_role = "GC_REVIEW", "GC_STEWARD"
-            result["status"] = "RUNNING"      # 覆盖引擎的 COMPLETED：单子仍在流程内
-            result["outcome"] = None
-            mirror_to = "GC_REVIEW"
+        # 注：旧版此处有「RETURNED 任务重新流转」分支（escalate 快进 GC_REVIEW），
+        # 是退回口径修正前的产物——当时 GC 退回也会置 RETURNED。口径修正后
+        # GC 退回落 PENDING@BU_REVIEW，RETURNED 只意味「等申请人重报」，且已在
+        # 函数入口被守卫拦下，该分支不可达，已移除。
 
         # 轨迹：审批动作（时间线数据源）
         from .trace import log_action
@@ -380,6 +408,12 @@ async def do_action(task_no: str, action: str, actor: str,
         return_to_code = "BU_REVIEW" if return_from_gc else "APPLY"
         return_to_name = "BU Scope 初审" if return_from_gc else "创建客户申请"
         return_to_role = "BU_STEWARD" if return_from_gc else "BU_USER"
+        # 合并单没有「申请人」（发起方是治理 steward）：BU 退回若落 APPLY 会成为
+        # 永久孤儿——合并没有修改重报入口（实测 MG-20260923-0001 卡死 RETURNED@APPLY）。
+        # 合并的退回统一回到发起人（GC Scope 决策）复核：GC 可重新定案或再退 BU 补证据。
+        if (task.get("biz_type") or "") == "MERGE" and not return_from_gc:
+            return_to_code, return_to_name, return_to_role = \
+                "GC_REVIEW", "GC Scope 决策", "GC_STEWARD"
         if is_return:
             mirror_to = return_to_code
         # 退回动作的 to_node 必须写退回目标：引擎在没有 return 分支时会按默认流走到
@@ -442,11 +476,9 @@ async def do_action(task_no: str, action: str, actor: str,
         if action == "escalate" or (next_role or "").upper() == "GC" or "GC" in (node or "").upper():
             update_vals["scope"] = "GC"
         if is_return:
-            # 退回到「谁该办」那一格：scope=BU 让单子回到 BU 队列
-            # （BU Queue = scope=BU 且 status ∈ PENDING/RETURNED），
-            # 节点与办理角色按发起层级分开置——GC 退回停在 BU Scope 初审，
-            # BU 退回才是回申请人改稿。
-            update_vals["scope"] = "BU"
+            # 退回到「谁该办」那一格：scope 跟随退回目标角色——
+            # BU_STEWARD/BU_USER → BU 队列；GC_STEWARD（合并退回发起人）→ GC 队列
+            update_vals["scope"] = "GC" if return_to_role == "GC_STEWARD" else "BU"
             update_vals["current_node_code"] = return_to_code
             update_vals["current_node_name"] = return_to_name
             update_vals["assignee_role"] = return_to_role

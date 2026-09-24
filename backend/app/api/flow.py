@@ -18,7 +18,7 @@ router = APIRouter(prefix="/cmd/flow", tags=["工作流"])
 BIZ_TYPE_CN = {
     "CUSTOMER_CREATE": "客户创建",
     "CUSTOMER_CHANGE": "客户变更",
-    "MERGE": "跨BU合并",
+    "MERGE": "客户合并",
     "IMPORT": "批量导入确认",
     "DEACTIVATE": "客户停用",
     "HIER_RELATION": "层级关系变更",
@@ -26,6 +26,15 @@ BIZ_TYPE_CN = {
     "MATCH_RULE_CHANGE": "匹配规则变更",
     "INTEGRATION_FAIL": "集成失败处理",
 }
+
+
+def _biz_type_cn(row: dict) -> str:
+    """biz_type → 展示名。MERGE 按 cross_bu_flag 如实区分：同BU=客户合并，跨BU=跨BU合并
+    （launch_merge 曾写死跨BU标记，标签随之失真——修复后标记如实，但展示仍不能依赖它猜）。"""
+    biz = row.get("biz_type") or ""
+    if biz == "MERGE" and (row.get("cross_bu_flag") or "N") == "Y":
+        return "跨BU合并"
+    return BIZ_TYPE_CN.get(biz, biz)
 
 # 平台固定 / 可配置节点判定（与 mock / Java CmdFlowSceneConfigServiceImpl 同一口径）：
 # 只有 GC 决策可按场景停用/增删（V6.1 待确认项：High End 必经 GC，Mainstream 可只走 BU 初审），
@@ -66,10 +75,26 @@ async def _scene_map(conn) -> dict[str, dict]:
 
 
 def _progress(steps: list[dict]) -> tuple[int, int, int]:
-    done = sum(1 for s in steps if s["status"] == "COMPLETED")
+    done = sum(1 for s in steps if s["status"] in ("COMPLETED", "SKIPPED"))
     total = len(steps)
     pct = round(done * 100 / total) if total else 0
     return done, total, pct
+
+
+def _merge_skip_codes(task: dict, touched: Optional[set] = None) -> set:
+    """同BU合并**办结**时，GC 决策节点未参与 → 泳道标「已跳过」（旧版画成绿色已完成，误导）。
+
+    · 跨BU合并（cross_bu_flag=Y）：GC 决策是必经节点，不跳过；
+    · 同BU但留有 GC 动作轨迹（BU 退回发起人复核后办结）：GC 真的办过，不跳过；
+    · 其余（同BU、办结、无 GC 轨迹）：跳过。是否生效由 apply_step_status 限定在办结态。
+    """
+    if (task.get("biz_type") or "") != "MERGE":
+        return set()
+    if (task.get("cross_bu_flag") or "N") == "Y":
+        return set()
+    if touched is not None and "GC_REVIEW" in touched:
+        return set()
+    return {"GC_REVIEW"}
 
 
 @router.get("/scenes")
@@ -138,7 +163,8 @@ async def flow_graph(scene_code: str, taskNo: Optional[str] = Query(None)):
                     task["current_node_code"], task["current_node_code"])
                 current_code = sl.apply_step_status(
                     steps, task["status"], task["current_node_name"], touched,
-                    current_node_code=cur_code, returned=returned)
+                    current_node_code=cur_code, returned=returned,
+                    skip_codes=_merge_skip_codes(task, touched))
         finally:
             await conn.close()
 
@@ -186,8 +212,10 @@ async def flow_instances(
     status: Optional[str] = Query(None),
     bizType: Optional[str] = Query(None),
     runState: Optional[str] = Query(None),
-    pageNum: int = Query(1, ge=1),
-    pageSize: int = Query(100, ge=1, le=200),
+    # 注意：QueryAliasMiddleware 会把前端的 pageNum/pageSize 统一改写为 page/size，
+    # 端点签名必须用 page/size（用 pageNum/pageSize 会永远收默认值导致分页失效）
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=200),
 ):
     """流程实例记录（FlowInstanceVO 分页）：源 = cmd_approval_task，Java listInstances 口径。"""
     t = table("cmd_approval_task")
@@ -211,11 +239,16 @@ async def flow_instances(
     try:
         rows = [dict(r) for r in (await conn.execute(
             select(t).where(*conds)
-            # 历史数据可能缺 create_time（旧导入链路未写），NULL 在 DESC 排序中沉底会导致
-            # 实例「看不见」——用 COALESCE 回退到 update_time/submit_time，再按 id 稳定排序
-            .order_by(func.coalesce(t.c.create_time, t.c.update_time, t.c.submit_time).desc(),
+            # 排序锚点 = 办结时间优先：刚批准/拒绝的单子必须出现在「已完成的工作流」
+            # 第一页最前——否则像 AP-20260923-0001 这种「早上创建、深夜才办结」的单子
+            # 会被压到最后一页，用户批完流程就「找不到这条工作流了」。
+            # 运行中的实例 finish_time 为 NULL，COALESCE 回落 create_time，原口径不变。
+            # 历史数据可能缺 create_time（旧导入链路未写），NULL 沉底问题同样用
+            # COALESCE 链兜住，最后按 id 稳定排序。
+            .order_by(func.coalesce(t.c.finish_time, t.c.create_time,
+                                    t.c.update_time, t.c.submit_time).desc(),
                       t.c.id.desc())
-            .limit(pageSize).offset((pageNum - 1) * pageSize))).mappings().all()]
+            .limit(size).offset((page - 1) * size))).mappings().all()]
         total = (await conn.execute(
             select(func.count()).select_from(t).where(*conds))).scalar() or 0
         smap = await _scene_map(conn)
@@ -236,14 +269,15 @@ async def flow_instances(
         scene = smap.get(scene_code, {})
         steps = sl.build_swimlane(scene_code)
         sl.apply_step_status(steps, r.get("status"), r.get("current_node_name"),
-                             current_node_code=r.get("current_node_code"))
+                             current_node_code=r.get("current_node_code"),
+                             skip_codes=_merge_skip_codes(r))
         done, total_steps, pct = _progress(steps)
         py = py_flows.get(r.get("task_no"))
         flow_instance_id = py["id"] if py else r.get("flow_instance_id")
         result.append({
             "id": r["id"], "taskNo": r.get("task_no"), "oneId": r.get("one_id"),
             "bizTitle": r.get("biz_title"),
-            "bizType": BIZ_TYPE_CN.get(r.get("biz_type") or "", r.get("biz_type")),
+            "bizType": _biz_type_cn(r),
             "sceneCode": scene_code,
             "sceneName": scene.get("scene_name"),
             "flowName": scene.get("flow_name"),
@@ -311,7 +345,19 @@ async def flow_trace(task_no: str):
                              current_node_code=sl.SCENE_STEP_ALIAS.get(scene_code, {}).get(
                                  task.get("current_node_code"), task.get("current_node_code")),
                              returned=sl.is_returned(task.get("status"),
-                                                     task.get("current_node_name"), actions))
+                                                     task.get("current_node_name"), actions),
+                             skip_codes=_merge_skip_codes(task, set(act_by_node.keys())))
+        # 退回发起节点：以最后一次 RETURN 动作的来源节点为准。
+        # 不能让前端拿「最后一个已退回节点」猜——退回会把下游节点连带标 RETURNED
+        # （如 BU 初审退回时 GC 决策也是 RETURNED），启发式会误判退回来源。
+        returned_from_code = None
+        for _a in reversed(actions):
+            if (_a.get("action_type") or "").upper() == "RETURN":
+                returned_from_code = _a.get("from_node_code")
+                break
+        returned_from_name = next(
+            (s.get("nodeName") for s in steps if s.get("nodeCode") == returned_from_code),
+            returned_from_code)
         done, total_steps, pct = _progress(steps)
 
         # 分步骤明细（1:1 移植 Java fillStepDetails：每个节点都有内容，点步骤条即切）
@@ -352,7 +398,7 @@ async def flow_trace(task_no: str):
         "graph": graph,
         "taskNo": task.get("task_no"),
         "bizTitle": task.get("biz_title"),
-        "bizType": BIZ_TYPE_CN.get(task.get("biz_type") or "", task.get("biz_type")),
+        "bizType": _biz_type_cn(task),
         "sceneCode": scene_code,
         "sceneName": scene.get("scene_name"),
         "flowCode": scene.get("flow_code"),
@@ -360,6 +406,9 @@ async def flow_trace(task_no: str):
         "status": task.get("status"),
         # 已退回：前端据此提示「本单被打回、下游节点需重做」（琥珀色标记）
         "returned": sl.is_returned(task.get("status"), task.get("current_node_name"), actions),
+        # 退回发起节点（最后一次 RETURN 动作的来源），横幅据此显示「由 X 退回」
+        "returnedFrom": returned_from_code,
+        "returnedFromName": returned_from_name,
         "currentNodeName": task.get("current_node_name"),
         "assigneeName": task.get("assignee_name"),
         "assigneeRole": task.get("assignee_role"),

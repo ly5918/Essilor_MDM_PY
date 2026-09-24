@@ -80,7 +80,8 @@
             <el-button class="poc-btn-orange" plain @click="openDialog('deactivate')">申请逻辑停用</el-button>
           </div>
           <div v-else-if="currentPage === 'admin'" class="page-title-actions">
-            <el-button type="primary" plain icon="Promotion" @click="onPublishMetadata">发布配置版本</el-button>
+            <!-- 打开「字段与值集管理」弹窗并落到「模型版本」页签，发布动作由用户在版本列表中确认执行 -->
+            <el-button type="primary" plain icon="Promotion" @click="openDialog('fields', { tab: 'version' })">发布配置版本</el-button>
           </div>
         </div>
 
@@ -99,7 +100,6 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, type Component } from 'vue';
-import { ElMessage } from 'element-plus';
 import type { PageId, RoleKey } from '@/api/demo/cmdPoc/types';
 import { createCmdPoc } from './composables/useCmdPoc';
 import { DASHBOARD_TITLES } from './constants/roles';
@@ -132,14 +132,9 @@ defineOptions({ name: 'CmdPoc' });
 
 const props = defineProps<{ defaultRole?: RoleKey }>();
 
-const { role, roleKey, currentPage, currentSub, currentMenu, currentParentMenu, pageTitle, readOnly, openDialog, goMenu, publishMetadata, sidebarCollapsed, toggleSidebar, loadCustomers, loadMetadataFields } = createCmdPoc(
+const { role, roleKey, currentPage, currentSub, currentMenu, currentParentMenu, pageTitle, readOnly, openDialog, goMenu, sidebarCollapsed, toggleSidebar, loadCustomers, loadMetadataFields } = createCmdPoc(
   (props.defaultRole ?? 'business') as RoleKey
 );
-
-/** 平台管理页头「发布配置版本」：Draft 字段全部转 Published（提示文案来自接口） */
-const onPublishMetadata = async () => {
-  ElMessage.success(await publishMetadata());
-};
 
 /** 页面面板注册表 */
 const PANEL_MAP: Record<PageId, Component> = {

@@ -92,6 +92,14 @@ class ChangeSubmit(BaseModel):
     is_key_change: Optional[str] = "N"
 
 
+class ChangeResubmit(BaseModel):
+    """被退回变更单「修改重报」入参（仅更新传入的非空字段）。"""
+    change_reason: Optional[str] = None
+    target_status: Optional[str] = None
+    remark: Optional[str] = None
+    applicant_name: Optional[str] = None
+
+
 class MergeLaunch(BaseModel):
     survivor_one_id: str
     merged_one_id: str

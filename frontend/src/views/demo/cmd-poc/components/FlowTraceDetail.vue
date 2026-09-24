@@ -284,14 +284,16 @@ const STEP_STATUS_TEXT: Record<string, string> = {
   CURRENT: '进行中',
   RETURNED: '已退回',
   PENDING: '待执行',
-  TERMINATED: '已终止'
+  TERMINATED: '已终止',
+  SKIPPED: '已跳过'
 };
 const STEP_STATUS_TAG: Record<string, TagType> = {
   COMPLETED: 'success',
   CURRENT: 'primary',
   RETURNED: 'warning',
   PENDING: 'info',
-  TERMINATED: 'danger'
+  TERMINATED: 'danger',
+  SKIPPED: 'info'
 };
 const stepStatusLabel = (status?: string) => STEP_STATUS_TEXT[status ?? ''] ?? (status || '—');
 const stepTagType = (status?: string) => STEP_STATUS_TAG[status ?? ''] ?? 'info';
@@ -332,6 +334,7 @@ const bandText = (step: FlowTraceStepVO) => {
   if (step.status === 'CURRENT') return 'to do';
   if (step.status === 'RETURNED') return '已退回';
   if (step.status === 'TERMINATED') return 'stopped';
+  if (step.status === 'SKIPPED') return 'skipped';
   return 'pending';
 };
 
@@ -346,8 +349,14 @@ const returnInfo = computed(() => {
   const backNodes = steps.filter(s => s.status === 'RETURNED');
   const isBack = t.returned === true || (t.status ?? '').toUpperCase() === 'RETURNED' || backNodes.length > 0;
   if (!isBack) return null;
-  // 退回发起节点 = 已退回节点里最靠后的那一个（流程是从它打回的）
-  const src = backNodes.length ? backNodes[backNodes.length - 1] : undefined;
+  // 退回发起节点：优先用后端按动作流水下发的 returnedFromName；
+  // 兜底才取「已退回节点里最靠后的那一个」——但退回会连带标记下游节点，
+  // 该启发式在 BU 初审退回时会误判成 GC 决策退回（后端字段缺失时才走）。
+  const src = t.returnedFromName
+    ? { nodeName: t.returnedFromName }
+    : backNodes.length
+      ? backNodes[backNodes.length - 1]
+      : undefined;
   const target = steps.find(s => s.status === 'CURRENT');
   return {
     title: `本单已被退回${src ? `（由「${src.nodeName}」退回）` : ''}，当前停留：「${target?.nodeName ?? t.currentNodeName ?? '—'}」`,
@@ -635,6 +644,27 @@ watch(() => [props.taskNo, props.detailType], load, { flush: 'post' });
     .ft-band {
       background: var(--el-color-danger-light-5);
       color: var(--el-color-danger);
+    }
+  }
+
+  /*
+    已跳过：网关未经过的节点（同BU合并 BU 直达办结，GC 决策未参与）。
+    与「待执行」区分：灰底 + 删除线文案，明确「这条流程不需要走这一步」。
+  */
+  &.is-skipped {
+    .ft-node {
+      border-style: dashed;
+    }
+
+    .ft-icon,
+    .ft-node-name {
+      color: var(--el-text-color-secondary);
+    }
+
+    .ft-band {
+      background: var(--el-fill-color-darker);
+      color: var(--el-text-color-secondary);
+      text-decoration: line-through;
     }
   }
 }

@@ -273,7 +273,8 @@ const routeTypeOf = (result: string) => {
   if (upper === 'INVALID') {
     return 'INVALID' as const;
   }
-  if (upper === 'REVIEW') {
+  // Suspected 与 Review 共用人工治理明细（漏了 SUSPECTED 会把「查看N条」错查成 Exact）
+  if (upper === 'REVIEW' || upper === 'SUSPECTED') {
     return 'SUSPECTED' as const;
   }
   return 'EXACT' as const;

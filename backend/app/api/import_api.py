@@ -66,14 +66,15 @@ async def import_stats():
 
 
 @router.get("/job/list")
-async def job_list(pageNum: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=200),
+async def job_list(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200),
                    jobStatusList: Optional[str] = Query(None)):
-    """任务分页列表；jobStatusList 为逗号分隔状态聚合（「仅看待处置」口径）。"""
+    """任务分页列表；jobStatusList 为逗号分隔状态聚合（「仅看待处置」口径）。
+    分页参数用 page/size：QueryAliasMiddleware 已把前端 pageNum/pageSize 改写为本签名。"""
     status_list = [s.strip().upper() for s in jobStatusList.split(",") if s.strip()] \
         if jobStatusList else None
     conn = await get_engine().connect()
     try:
-        data = await import_service.list_jobs(conn, pageNum, pageSize,
+        data = await import_service.list_jobs(conn, page, size,
                                               job_status_list=status_list)
     finally:
         await conn.close()
@@ -96,8 +97,9 @@ async def job_result(job_id: str):
 
 @router.get("/job/{job_id}/rows")
 async def job_rows(job_id: str, resultType: Optional[str] = Query(None),
-                   pageNum: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=200)):
-    """行明细分页（分流下钻「查看 N 条」；job_id 为 jobCode，支持 resultType 过滤）。"""
+                   page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200)):
+    """行明细分页（分流下钻「查看 N 条」；job_id 为 jobCode，支持 resultType 过滤）。
+    分页参数用 page/size：QueryAliasMiddleware 已把前端 pageNum/pageSize 改写为本签名。"""
     conn = await get_engine().connect()
     try:
         job = await import_service.get_job_or_fail(conn, job_id)
@@ -106,8 +108,8 @@ async def job_rows(job_id: str, resultType: Optional[str] = Query(None),
         return R.fail(str(e))
     finally:
         await conn.close()
-    start = (pageNum - 1) * pageSize
-    return R.ok({"rows": rows[start:start + pageSize], "total": len(rows)})
+    start = (page - 1) * size
+    return R.ok({"rows": rows[start:start + size], "total": len(rows)})
 
 
 @router.post("/row/{row_id}/action")

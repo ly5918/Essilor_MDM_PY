@@ -79,6 +79,12 @@
                 type="danger"
                 @click="cancel(toChangeRow(row))"
               >撤回</el-button>
+              <el-button
+                v-if="row.rawStatus === 'RETURNED'"
+                link
+                type="warning"
+                @click="openResubmit(toChangeRow(row))"
+              >修改重报</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -151,6 +157,12 @@
                 type="danger"
                 @click="cancel(toChangeRow(row))"
               >撤回</el-button>
+              <el-button
+                v-if="row.rawStatus === 'RETURNED'"
+                link
+                type="warning"
+                @click="openResubmit(toChangeRow(row))"
+              >修改重报</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -210,6 +222,38 @@
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- ============ 修改重报弹窗（BU Scope 退回 → 申请人补充修改 → 重进 BU 初审） ============ -->
+    <el-dialog
+      v-model="resubmitVisible"
+      title="修改重报"
+      width="520px"
+      append-to-body
+      close-on-click-modal
+    >
+      <el-form :model="resubmitForm" label-width="110px">
+        <el-form-item label="申请编号">
+          <span style="font-family: Consolas, monospace">{{ resubmitForm.requestCode }}</span>
+        </el-form-item>
+        <el-form-item :label="resubmitForm.isDeactivate ? '停用原因' : '变更原因'">
+          <el-input
+            v-model="resubmitForm.reason"
+            type="textarea"
+            :rows="4"
+            maxlength="500"
+            show-word-limit
+            :placeholder="resubmitForm.isDeactivate ? '根据审批意见补充 / 修正停用原因' : '根据审批意见补充 / 修正变更原因'"
+          />
+        </el-form-item>
+        <el-form-item label="重报说明">
+          <el-input v-model="resubmitForm.remark" maxlength="200" placeholder="选填，默认记为「修改重报」" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resubmitVisible = false">取消</el-button>
+        <el-button type="primary" :loading="resubmitting" @click="onResubmit">确认重报</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -406,6 +450,44 @@ async function cancel(row: ChangeRequestVO) {
     refetchActive();
   } catch (e) {
     ElMessage.error((e as Error).message || '撤回失败');
+  }
+}
+
+/* ---------------- 修改重报（仅 RETURNED：补充原因后重进 BU Scope 初审） ---------------- */
+const resubmitVisible = ref(false);
+const resubmitting = ref(false);
+const resubmitForm = ref({ requestCode: '', reason: '', remark: '', isDeactivate: false });
+
+function openResubmit(row: ChangeRequestVO) {
+  resubmitForm.value = {
+    requestCode: row.requestId,
+    reason: '',
+    remark: '',
+    isDeactivate: row.changeType === 'Deactivate',
+  };
+  resubmitVisible.value = true;
+}
+
+async function onResubmit() {
+  if (!resubmitForm.value.reason.trim()) {
+    ElMessage.warning('请先根据审批意见补充 / 修正原因，再确认重报');
+    return;
+  }
+  resubmitting.value = true;
+  try {
+    const msg = await cmdPocApi.resubmitChangeRequest(resubmitForm.value.requestCode, {
+      changeReason: resubmitForm.value.reason.trim(),
+      remark: resubmitForm.value.remark.trim() || '修改重报',
+    });
+    ElMessage.success(msg);
+    resubmitVisible.value = false;
+    ctx.markChangeChanged();
+    ctx.refreshBadge();
+    refetchActive();
+  } catch (e) {
+    ElMessage.error((e as Error).message || '修改重报失败');
+  } finally {
+    resubmitting.value = false;
   }
 }
 

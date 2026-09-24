@@ -31,6 +31,7 @@ STEP_COMPLETED = "COMPLETED"    # 已完成（绿色）
 STEP_CURRENT = "CURRENT"        # 进行中（蓝色）
 STEP_RETURNED = "RETURNED"      # 已退回（琥珀色）：走过又被退回作废，需重做
 STEP_TERMINATED = "TERMINATED"  # 已终止（红色）
+STEP_SKIPPED = "SKIPPED"        # 已跳过（灰色虚线）：网关未经过该节点（如同BU合并直达办结，GC 决策未参与）
 STEP_PENDING = "PENDING"        # 待执行（灰色）
 
 # 「退回类」任务状态：流程被打回上游，工作停留在退回目标节点
@@ -317,7 +318,8 @@ def return_source_node(actions: Optional[list]) -> Optional[str]:
 def apply_step_status(steps: list[dict], task_status: Optional[str],
                       current_node_name: Optional[str], touched_nodes: Optional[set] = None,
                       current_node_code: Optional[str] = None,
-                      returned: Optional[bool] = None) -> str:
+                      returned: Optional[bool] = None,
+                      skip_codes: Optional[set] = None) -> str:
     """Java applyStepStatus 的语义修正版，返回解析出的当前节点编码。
 
     - 终态（APPROVED / COMPLETED）：全部 STEP_COMPLETED
@@ -362,6 +364,13 @@ def apply_step_status(steps: list[dict], task_status: Optional[str],
             s["status"] = STEP_RETURNED if returned else STEP_COMPLETED
         else:
             s["status"] = STEP_PENDING
+    if skip_codes and finished:
+        # 网关未经过的节点（如同BU合并 BU 直达办结、GC 决策未参与）：
+        # 仅在流程已办结时覆盖为「已跳过」——运行中单子后续仍可能走到该节点
+        # （如同BU合并 BU 退回发起人复核会回到 GC_REVIEW），不能提前判死。
+        for s in steps:
+            if s["nodeCode"] in skip_codes:
+                s["status"] = STEP_SKIPPED
     return current_code
 
 

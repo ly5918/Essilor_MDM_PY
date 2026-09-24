@@ -217,12 +217,16 @@ import NewFieldDialog from './NewFieldDialog.vue';
 
 defineOptions({ name: 'CmdPocFieldsDialog' });
 
-defineProps<{ payload?: Record<string, unknown> }>();
+const props = defineProps<{ payload?: Record<string, unknown> }>();
 
 const { metadataFields, upsertMetadataField, loadMetadataFields, publishMetadata, fieldRows, loadFieldRows, deleteMetadataField } =
   useCmdPoc();
 
-const activeTab = ref('fields');
+/**
+ * 初始页签支持由打开方通过 payload.tab 指定（如平台管理页头「发布配置版本」
+ * 直接落到「模型版本」页签，由用户在版本列表里点「发布」，而不是页头一键发布）。
+ */
+const activeTab = ref(props.payload?.tab === 'version' ? 'version' : 'fields');
 const valueSets = ref<Awaited<ReturnType<typeof listValueSets>>>([]);
 const versions = ref<ModelVersionVO[]>([]);
 

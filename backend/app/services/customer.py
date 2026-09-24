@@ -533,19 +533,36 @@ async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> O
         if master_peers and master_peers[0]["one_id"] != one_id:
             merged_to = master_peers[0]["one_id"]
 
-    # 幂等守卫：one_id 已有主档（如重复审批/重放）不重复 INSERT——
-    # 否则撞唯一键直接 500（真实案例：升级误发布后 GC 再点「退回BU」报 Internal Server Error）
+    # 幂等守卫：one_id 已有主档时先分辨「是不是同一主体」，不能见占用就吞——
+    #   · 同一主体（信用代码一致；申请无码时退而比对法定名称）：重复审批/重放，
+    #     幂等返回即可，否则撞唯一键 500（真实案例：升级误发布后 GC 再点「退回BU」报错）；
+    #   · 不同主体：one_id 被无关记录占用（典型：提交时预分配的号段随后被演示种子
+    #     数据占用，如 AP-20260923-0001 预分 GC-00000002、种子库随后灌入苏州新视野）。
+    #     若照旧吞掉，申请单显示「已批准」、主档里却找不到这家客户，治理者
+    #     「排除重复·继续新建」的决策被静默丢弃——必须重新分配 One ID 继续发布。
+    one_id_reassign_note = ""
     existing = (await conn.execute(
-        select(table("cmd_customer").c.id)
+        select(table("cmd_customer").c.credit_code, table("cmd_customer").c.legal_name)
         .where(table("cmd_customer").c.one_id == one_id)
     )).first()
-    if existing is not None:
-        await conn.execute(
-            table("cmd_customer_application").update()
-            .where(table("cmd_customer_application").c.app_no == app_row["app_no"])
-            .values(status="approved", effective_from=datetime.now(), approved_time=datetime.now())
+    if existing is not None and not merged_to:
+        ex = existing._mapping
+        same_entity = (
+            (app_row["credit_code"] and ex["credit_code"] == app_row["credit_code"])
+            or (not app_row["credit_code"] and ex["legal_name"] == app_row["legal_name"])
         )
-        return one_id
+        if same_entity:
+            await conn.execute(
+                table("cmd_customer_application").update()
+                .where(table("cmd_customer_application").c.app_no == app_row["app_no"])
+                .values(status="approved", effective_from=datetime.now(), approved_time=datetime.now())
+            )
+            return one_id
+        one_id_reassign_note = (
+            f"提交时预分配的 One ID {one_id} 已被其他主体"
+            f"（{ex['legal_name'] or '未知主体'}）占用，发布时重新分配为 ")
+        one_id = await seq.gen_one_id(conn)
+        one_id_reassign_note += one_id
 
     if merged_to:
         # 关联到既有主档：本单不新建黄金记录（设计文档：Exact / 治理后关联已有 One ID）
@@ -600,10 +617,18 @@ async def publish_customer(conn, app_row, outcome: str, decision: str = "") -> O
         create_by=0, create_time=datetime.now(),
     ))
     vals = {"status": "approved", "effective_from": datetime.now(),
-            "approved_time": datetime.now(), "dq_score": dq_value, "dq_grade": dq_grade}
+            "approved_time": datetime.now(), "dq_score": dq_value, "dq_grade": dq_grade,
+            # one_id 同步回写申请单：正常场景等于原值；号段被占用重新分配时
+            # 让申请单指向真正发布出去的那条主档
+            "one_id": one_id}
+    remark_parts = []
+    if one_id_reassign_note:
+        remark_parts.append(one_id_reassign_note)
     if earlier_in_flight is not None:
-        vals["remark"] = (f"本条已发布为 One ID {one_id}；同信用代码仍有更早提交的在途申请 "
-                          f"{earlier_in_flight._mapping['app_no']} 待处置，请跟进确认是否同一主体")
+        remark_parts.append(f"本条已发布为 One ID {one_id}；同信用代码仍有更早提交的在途申请 "
+                            f"{earlier_in_flight._mapping['app_no']} 待处置，请跟进确认是否同一主体")
+    if remark_parts:
+        vals["remark"] = "；".join(remark_parts)
     await conn.execute(
         table("cmd_customer_application").update()
         .where(table("cmd_customer_application").c.app_no == app_row["app_no"])
