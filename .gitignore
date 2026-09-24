@@ -114,7 +114,7 @@ frontend/docs/*/*/*/*/*.jpeg
 frontend/docs/*/*/*/*/*.gif
 
 # ===================== 数据库 =====================
-# 数据库 dump/备份（含数据，不上传；仅保留 sql/ 下的 schema）
+# sql/ 下保留 schema 和完整 dump；其余临时 dump/备份不上传
 _db_dump_*.sql
 _db_dump_*.txt
 _backup_*.sql

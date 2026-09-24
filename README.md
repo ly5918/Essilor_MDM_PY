@@ -56,8 +56,9 @@ Essilor_MDM_PY/
 │   ├── .env.development        # 开发环境配置
 │   ├── .env.production         # 生产环境配置
 │   └── package.json
-├── sql/                        # 数据库 schema（仅结构，无数据）
-│   ├── db_schema.sql           # 全库 119 张表 DDL（与本地开发库一致，推荐）
+├── sql/                        # 数据库脚本
+│   ├── db_full_dump.sql        # 全库完整导出（64 表 DDL + 全部业务数据，开箱即用，推荐）
+│   ├── db_schema.sql           # 全库 119 张表 DDL（仅结构，无数据）
 │   └── cmd_schema_subset.sql   # CMD 业务相关 93 张表子集 DDL
 ├── .gitignore
 └── README.md
@@ -107,18 +108,15 @@ Essilor_MDM_PY/
 # 1) 登录 MySQL，创建数据库
 mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS ruoyi_plus_py DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_general_ci;"
 
-# 2) 导入 schema（仅表结构，无数据；推荐全量 119 表）
-mysql -uroot -p ruoyi_plus_py < sql/db_schema.sql
+# 2) 导入完整数据（含表结构 + 全部业务数据，推荐）
+mysql -uroot -p < sql/db_full_dump.sql
 ```
 
-> **重要**：
-> - `sql/db_schema.sql` 为全库 119 张表，与本地开发库完全一致，**必须使用它**导入。
->   `cmd_flow_def_version`、`cmd_py_flow_instance`、`cmd_py_seq` 三张表已包含——
->   `cmd_py_flow_instance` / `cmd_py_seq` 后端启动时也会自动创建（`create_all`），但 schema 中已有确保最稳。
-> - 如仅需 CMD 业务相关表，可改用 `sql/cmd_schema_subset.sql`（93 表），已含上述 3 张必需表。
-> - schema 不含业务数据。首次启动后登录系统，通过「客户新建 / 批量导入」等页面录入即可；
->   系统配置类表（`sys_dict_*`、`cmd_role`、`cmd_flow_scene`、`md_model` 等）为保留主数据，初始为空，若前端依赖字典选项展示异常，可参考
->   `CMD_POC_页面-数据表清单.md` 中各表的常用字典值手工补录。
+> **说明**：
+> - `sql/db_full_dump.sql`：从开发库完整导出（64 表 DDL + 全部业务数据），**推荐使用**，导入后开箱即用。
+> - `sql/db_schema.sql`：仅 119 表 DDL（无数据），适用于只需空库的场景。
+> - `sql/cmd_schema_subset.sql`：CMD 业务 93 表子集 DDL。
+> - **详细导入步骤见 [`sql/数据库导入说明.md`](sql/数据库导入说明.md)。**
 
 ---
 
